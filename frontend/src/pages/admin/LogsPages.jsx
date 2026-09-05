@@ -1,7 +1,20 @@
 import React, { useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
-import { FileText, ScrollText, History } from "lucide-react";
+import { FileText, ScrollText, History, ThumbsUp, ThumbsDown } from "lucide-react";
+
+function FeedbackCell({ fb }) {
+  if (!fb) return <span className="text-slate-600 text-xs">—</span>;
+  const up = fb.rating === "up";
+  return (
+    <div className="flex items-center gap-2 max-w-[260px]" title={fb.comment || ""}>
+      <Badge className={`border ${up ? "bg-emerald-500/15 text-emerald-300 border-emerald-500/40" : "bg-rose-500/15 text-rose-300 border-rose-500/40"} gap-1`}>
+        {up ? <ThumbsUp className="h-3 w-3" /> : <ThumbsDown className="h-3 w-3" />} {up ? "Helpful" : "Off"}
+      </Badge>
+      {fb.comment && <span className="truncate text-xs text-slate-400">{fb.comment}</span>}
+    </div>
+  );
+}
 
 export function AnalysisHistory({ endpoint = "/admin/analyses", title = "Analysis History" }) {
   const [items, setItems] = useState([]);
@@ -13,10 +26,10 @@ export function AnalysisHistory({ endpoint = "/admin/analyses", title = "Analysi
       <div className="mt-6 overflow-hidden rounded-xl border border-slate-800 bg-slate-950/50">
         <table className="w-full text-sm">
           <thead className="bg-slate-900/70 text-slate-400 text-xs uppercase tracking-wider">
-            <tr><th className="px-4 py-3 text-left">Incident</th><th className="px-4 py-3 text-left">User</th><th className="px-4 py-3 text-left">Model</th><th className="px-4 py-3 text-left">Confidence</th><th className="px-4 py-3 text-left">Status</th><th className="px-4 py-3 text-left">Date</th></tr>
+            <tr><th className="px-4 py-3 text-left">Incident</th><th className="px-4 py-3 text-left">User</th><th className="px-4 py-3 text-left">Model</th><th className="px-4 py-3 text-left">Confidence</th><th className="px-4 py-3 text-left">Status</th><th className="px-4 py-3 text-left">Feedback</th><th className="px-4 py-3 text-left">Date</th></tr>
           </thead>
           <tbody className="divide-y divide-slate-800/80">
-            {items.length === 0 && (<tr><td colSpan={6} className="px-4 py-8 text-center text-slate-500">No records.</td></tr>)}
+            {items.length === 0 && (<tr><td colSpan={7} className="px-4 py-8 text-center text-slate-500">No records.</td></tr>)}
             {items.map(a => (
               <tr key={a.id} className="hover:bg-slate-900/50" data-testid={`analysis-row-${a.id}`}>
                 <td className="px-4 py-3 font-mono text-cyan-300 text-xs">{a.incident_number}</td>
@@ -24,6 +37,7 @@ export function AnalysisHistory({ endpoint = "/admin/analyses", title = "Analysi
                 <td className="px-4 py-3 text-slate-300">{a.model}</td>
                 <td className="px-4 py-3"><Badge className="bg-slate-800 border border-slate-700 text-slate-200">{a.confidence}</Badge></td>
                 <td className="px-4 py-3"><Badge className={a.status === "success" ? "bg-emerald-500/15 text-emerald-300 border-emerald-500/40 border" : "bg-rose-500/15 text-rose-300 border-rose-500/40 border"}>{a.status}</Badge></td>
+                <td className="px-4 py-3" data-testid={`analysis-feedback-${a.id}`}><FeedbackCell fb={a.feedback} /></td>
                 <td className="px-4 py-3 text-slate-400 font-mono text-xs">{a.created_at?.slice(0,19).replace("T"," ")}</td>
               </tr>
             ))}

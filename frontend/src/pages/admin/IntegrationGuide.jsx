@@ -26,13 +26,13 @@ export default function IntegrationGuide() {
       <Section title="A. ServiceNow Setup">
         <ol className="list-decimal ml-5 space-y-2">
           <li>Obtain your ServiceNow instance URL (e.g. <code className="text-cyan-300">https://acme.service-now.com</code>).</li>
-          <li>Create an integration user with the <code className="text-cyan-300">rest_api_explorer</code> and <code className="text-cyan-300">itil</code> (read-only preferred) roles.</li>
-          <li>Grant read access to the <code className="text-cyan-300">incident</code> table.</li>
-          <li>Verify REST access with a simple GET call to the Table API.</li>
-          <li>Open <b>Admin → ServiceNow</b> and enter Instance URL, Username, Password/Token.</li>
+          <li>Ensure each analyst has a ServiceNow account with the <code className="text-cyan-300">itil</code> (read-only preferred) role and REST access to the <code className="text-cyan-300">incident</code> table.</li>
+          <li>Open <b>Admin → ServiceNow</b> and enter the Instance URL. No shared service account is stored — each user authenticates with their own credentials.</li>
           <li>Configure the incident query — the active/open filter used by the app.</li>
           <li>Configure the list of fields to retrieve.</li>
-          <li>Click <b>Test Connection</b>. A green success indicates the app can reach ServiceNow.</li>
+          <li>Click <b>ServiceNow Login</b> in the sidebar and enter <i>your</i> ServiceNow username/password (encrypted at rest, never visible to admins).</li>
+          <li>Click <b>Test Connection</b>. A green success indicates the app can reach ServiceNow with your credentials.</li>
+          <li>End users are prompted for their own credentials the first time they open the incident list.</li>
         </ol>
         <Code>{`GET https://<instance>.service-now.com/api/now/table/incident?sysparm_query=active=true^stateNOT IN6,7,8&sysparm_limit=25`}</Code>
         <p className="text-slate-400">The Table API supports pagination via <code>sysparm_limit</code> and <code>sysparm_offset</code>, and filtering via <code>sysparm_query</code>. Fields returned are controlled via <code>sysparm_fields</code>.</p>

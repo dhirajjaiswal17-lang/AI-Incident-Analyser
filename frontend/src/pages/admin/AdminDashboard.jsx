@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import { Link } from "react-router-dom";
-import { Activity, BookOpen, ClipboardList, Layers, FileText, Users } from "lucide-react";
+import { Activity, BookOpen, ClipboardList, Layers, FileText, Users, ThumbsUp } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 
 export default function AdminDashboard() {
@@ -10,6 +10,7 @@ export default function AdminDashboard() {
   const stats = [
     { k: "users", label: "Users", icon: Users },
     { k: "analyses", label: "Analyses", icon: FileText },
+    { k: "helpful_rate", label: "Helpful Rate", icon: ThumbsUp, fmt: (v, d) => v == null ? "—" : `${v}%`, sub: (d) => d?.feedback_total ? `${d.feedback_up}/${d.feedback_total} rated` : "no ratings yet" },
     { k: "kb", label: "KB Articles", icon: BookOpen },
     { k: "rca", label: "RCA Entries", icon: ClipboardList },
     { k: "applications", label: "Applications", icon: Layers },
@@ -21,12 +22,13 @@ export default function AdminDashboard() {
       <h1 className="mt-1 text-3xl lg:text-4xl font-extrabold tracking-tight">Admin Dashboard</h1>
       <p className="mt-2 text-slate-400 text-sm">Health of the AI Incident Analyzer platform.</p>
 
-      <div className="mt-6 grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-4">
+      <div className="mt-6 grid grid-cols-2 md:grid-cols-4 xl:grid-cols-7 gap-4">
         {stats.map((s) => (
           <div key={s.k} className="rounded-xl border border-slate-800 bg-slate-950/60 p-5" data-testid={`stat-${s.k}`}>
             <s.icon className="h-5 w-5 text-cyan-400" />
-            <div className="mt-3 text-2xl font-bold tracking-tight">{data?.[s.k] ?? "—"}</div>
+            <div className="mt-3 text-2xl font-bold tracking-tight">{s.fmt ? s.fmt(data?.[s.k], data) : (data?.[s.k] ?? "—")}</div>
             <div className="mt-1 text-xs text-slate-400 uppercase tracking-wider">{s.label}</div>
+            {s.sub && <div className="mt-0.5 text-[10px] text-slate-500">{s.sub(data)}</div>}
           </div>
         ))}
       </div>

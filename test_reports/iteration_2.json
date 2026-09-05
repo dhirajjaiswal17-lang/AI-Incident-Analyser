@@ -1,0 +1,51 @@
+{
+  "summary": "Iteration-2 e2e testing of the 4 new features (per-user ServiceNow credentials, analyst feedback, KB document upload, analyze rate limiting) plus regression. Added /app/backend/tests/test_new_features.py (31 tests) and modernised the stale iteration-1 assertions in backend_test.py (they assumed demo mode + admin-level SN username/password, which no longer exist). Final backend result: 78/78 pass (47 regression + 31 new; PDF upload now covered with a hand-built valid PDF, no extra deps). Frontend verified with 4 Playwright runs: 428 auto-open of the SN credentials dialog + banner + amber/green sidebar indicator + save/test/remove, admin ServiceNow page (no credential inputs, per-user note, open-my-creds), AI config rate-limit input persistence, KB drop-zone upload -> table -> edit -> delete, end-user demo-mode incident detail (quota text, analyze, thumbs-down + comment + feedback-done, quota decrement), exhausted-quota state (disabled button + red text), Admin Analysis History Feedback column and Admin Dashboard Helpful Rate card. All config state restored: instance_url=https://dev414250.service-now.com (table=incident, default query/fields, show_work_notes=false), rate_limit_per_hour=10, admin test user's SN creds deleted (428 state), owner's creds (user_33ad5ed974a9) untouched.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/admin/kb/upload", "issue": "No de-duplication: uploading the same file twice creates two KB articles with identical title/content (grows the AI grounding corpus with duplicates). Consider upsert on source_file or a warning."},
+      {"endpoint": "POST /api/admin/kb/upload", "issue": "Whole file is read into memory before the size check (`await file.read()` then len>10MB -> 413); a 1GB upload is fully buffered before rejection. Prefer chunked read with early abort."},
+      {"endpoint": "POST /api/incidents/{sys_id}/analyze", "issue": "Rate-limit counter includes analyses whose LLM call failed (status='error' fallback record), so a user burns quota on backend AI failures."},
+      {"endpoint": "startup", "issue": "Still on deprecated @app.on_event('startup'/'shutdown') (carried over from iteration 1)."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "ServiceNowCredentialsDialog.remove()", "issue": "After clicking Remove, the sidebar status dot stays green (bg-emerald-400) until a page reload — remove() updates local state and shows a toast but never dispatches the SN_CREDS_SAVED event that AppShell listens to for refreshing snStatus. Backend deletion is correct (verified GET /api/me/servicenow -> has_credentials:false).", "selector": "[data-testid=sn-creds-indicator] / [data-testid=sn-creds-remove-btn]", "priority": "MEDIUM"},
+      {"component": "ServiceNowCredentialsDialog.remove()", "issue": "No try/catch around api.delete('/me/servicenow'); a failing delete throws an unhandled promise rejection and still shows 'Credentials removed'.", "selector": "[data-testid=sn-creds-remove-btn]", "priority": "LOW"}
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Admin Analysis History (/admin/analyses)", "issues": ["Feedback cell renders the badge and the comment with no gap in the DOM text ('OffTEST_not helpful'); visually fine but consider truncating/tooltipping long comments consistently (currently only one row truncates with an ellipsis)."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_new_features.py",
+    "/app/backend/tests/backend_test.py",
+    "/app/test_reports/pytest/pytest_results.xml",
+    "/app/test_reports/pytest/iteration2_new_features.xml"
+  ],
+  "action_items": [
+    "Dispatch the SN_CREDS_SAVED (or a dedicated sn-creds-changed) event from ServiceNowCredentialsDialog.remove() so the sidebar indicator turns amber immediately after removing credentials; wrap the delete in try/catch.",
+    "Optional hardening: de-duplicate KB uploads by source_file, stream-check upload size before buffering, and don't count failed AI analyses against the hourly quota.",
+    "Optional: split server.py (809 lines, over the 700-line guideline) into routers (auth, incidents, ai, admin_crud, kb) and migrate on_event -> lifespan."
+  ],
+  "critical_code_review_comments": [
+    "Verified encryption at rest: sn_credentials.password is Fernet ciphertext ('gAAAA...') and the plaintext never appears in the document nor in /api/admin/audit output. Admin SN config no longer exposes username/password. Good.",
+    "428/424 contract holds and always returns JSON (no Cloudflare HTML): no creds -> 428 {'detail':'ServiceNow credentials required'} on /incidents, /incidents/{id}, /incidents/{id}/analyze; wrong creds -> 424 'ServiceNow authentication failed — check your ServiceNow username/password'. /me/servicenow/test and /admin/servicenow/test swallow the HTTPException and return {ok:false,message} as designed.",
+    "Feedback ownership is enforced via the update filter {id, user_email}, so another user gets 404 (no information leak). rating validation returns 400.",
+    "Iteration-1 tests in backend_test.py were asserting the OLD contract (demo-mode incident list, cfg['password'] masking, 'not configured' SN test message) and failed 10/51 after this iteration; I rewrote those assertions to be mode-agnostic (200 in demo mode, 428/424 with a real instance) and to assert the absence of username/password in the admin config. One of those legacy tests (test_put_masks_password_and_preserves) had been clearing instance_url and 'restoring' it to '' — that is what silently left the app in demo mode mid-run; the new version round-trips the real config.",
+    "test_new_features.py mutates shared config (instance_url / rate_limit_per_hour) so it must be run serially: `cd /app/backend && python -m pytest tests/ -n 0`. A module-scoped autouse fixture restores SN + AI defaults and deletes the admin test user's creds even on failure."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_new_features.py (new, 31 tests)",
+    "/app/backend/tests/backend_test.py (updated stale iteration-1 assertions for the new per-user-credential contract)"
+  ],
+  "success_rate": {"backend": "100% (78/78)", "frontend": "100% of tested flows (1 minor stale-indicator bug found)"},
+  "seed_data_creation": "No permanent seed data. Temporary: admin test user's SN creds (TEST_ui_user / TEST_sn_user) — deleted; TEST_ KB uploads (md/txt/pdf/ui) — deleted (KB back to 8 articles); TEST_ RCA record — deleted; TEST_ feedback comments on analyses — cleared afterwards (analyses log rows themselves remain, 19 total). test_session_end_001 keeps its dummy creds sre.user/secret1 as documented.",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "test_credentials": "Bearer/cookie session_token: test_session_admin_001 (admin@test.local, no SN creds -> 428), test_session_end_001 (user@test.local, dummy SN creds sre.user/secret1 -> 424). Both valid.",
+  "context_for_next_testing_agent": "Run the suite serially: `cd /app/backend && python -m pytest tests/ -n 0 -q` (78 tests, ~15s + LLM calls). test_new_features.py temporarily sets instance_url='' (demo mode) and mutates rate_limit_per_hour; its module fixture restores instance_url=https://dev414250.service-now.com and rate_limit_per_hour=10 and deletes the admin user's SN creds — never run it with -n 2 alongside backend_test.py or the two will race on config. Never touch sn_credentials for user_33ad5ed974a9 (owner's real SN account). Real-instance happy path (200 incidents from ServiceNow) remains untestable — no valid creds. Also still untested: OAuth /api/auth/session happy path, non-openai providers, >10MB upload rejection (413 path not exercised), and drag-and-drop (only set_input_files was used for KB upload).",
+  "rca_of_the_issue": "No new backend defects. Root cause of the 10 iteration-1 test failures: they encoded the pre-iteration-2 contract (SN credentials on the admin config, demo-mode incidents). Additionally test_put_masks_password_and_preserves restored instance_url to '' instead of its original value, leaving the deployment in demo mode after a run — fixed. Root cause of the stale green credential indicator: remove() in ServiceNowCredentialsDialog.jsx mutates only local dialog state and does not emit the SN_CREDS_SAVED event that AppShell uses to re-fetch /me/servicenow."
+}

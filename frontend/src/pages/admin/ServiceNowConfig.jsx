@@ -6,7 +6,8 @@ import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { toast } from "sonner";
-import { Database, PlugZap } from "lucide-react";
+import { Database, PlugZap, KeyRound } from "lucide-react";
+import { openSNCredentials } from "@/components/ServiceNowCredentialsDialog";
 
 export default function ServiceNowConfig() {
   const [cfg, setCfg] = useState(null);
@@ -40,13 +41,13 @@ export default function ServiceNowConfig() {
           <Input value={cfg.instance_url} onChange={e => setCfg({ ...cfg, instance_url: e.target.value })}
                  placeholder="https://your-instance.service-now.com" className="bg-slate-900 border-slate-800" data-testid="sn-url-input" />
         </Field>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <Field label="Username">
-            <Input value={cfg.username} onChange={e => setCfg({ ...cfg, username: e.target.value })} className="bg-slate-900 border-slate-800" data-testid="sn-username-input" />
-          </Field>
-          <Field label="Password / API Token">
-            <Input type="password" value={cfg.password} onChange={e => setCfg({ ...cfg, password: e.target.value })} className="bg-slate-900 border-slate-800" data-testid="sn-password-input" />
-          </Field>
+        <div className="rounded-lg border border-cyan-500/30 bg-cyan-500/5 px-4 py-3 flex items-start gap-3" data-testid="sn-per-user-note">
+          <KeyRound className="h-4 w-4 text-cyan-300 mt-0.5 shrink-0" />
+          <div className="text-xs text-slate-300">
+            <div className="font-medium text-slate-100">Per-user authentication</div>
+            Each user (including you) signs in with their <b>own</b> ServiceNow username/password via <b>ServiceNow Login</b> in the sidebar. No shared service account is stored here.
+            <button onClick={openSNCredentials} className="ml-1 text-cyan-300 hover:underline" data-testid="sn-open-my-creds-btn">Set my credentials →</button>
+          </div>
         </div>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <Field label="Table">
@@ -73,6 +74,7 @@ export default function ServiceNowConfig() {
           <Button variant="outline" onClick={test} disabled={testing} className="border-slate-700 bg-slate-900 text-slate-200 hover:bg-slate-800" data-testid="sn-test-btn">
             <PlugZap className="h-4 w-4 mr-2" /> {testing ? "Testing…" : "Test Connection"}
           </Button>
+          <span className="text-xs text-slate-500">Test uses your own ServiceNow credentials.</span>
         </div>
       </div>
     </div>

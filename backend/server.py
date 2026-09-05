@@ -1,8 +1,9 @@
 """AI Incident Analyzer - Backend API
 Enterprise banking IT production support: ServiceNow + LLM incident analysis.
 """
-from fastapi import FastAPI, APIRouter, Depends, HTTPException, Request, Response, Cookie, Query
+from fastapi import FastAPI, APIRouter, Depends, HTTPException, Request, Response, Cookie, Query, UploadFile, File, Form
 from fastapi.responses import JSONResponse
+from cryptography.fernet import Fernet
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -40,6 +41,10 @@ def iso(dt: Optional[datetime]) -> Optional[str]:
 def new_id(prefix="id"):
     return f"{prefix}_{uuid.uuid4().hex[:12]}"
 
+_fernet = Fernet(os.environ["CREDENTIALS_SECRET"].encode())
+def encrypt(s: str) -> str: return _fernet.encrypt(s.encode()).decode()
+def decrypt(s: str) -> str: return _fernet.decrypt(s.encode()).decode()
+
 # ---------- Models ----------
 class User(BaseModel):
     user_id: str
@@ -54,8 +59,6 @@ class AuthPayload(BaseModel):
 
 class ServiceNowConfig(BaseModel):
     instance_url: str = ""
-    username: str = ""
-    password: str = ""
     table: str = "incident"
     active_query: str = "active=true^stateNOT IN6,7,8"
     fields: List[str] = Field(default_factory=lambda: [
@@ -72,6 +75,15 @@ class AIConfig(BaseModel):
     max_tokens: int = 1400
     api_key: str = ""               # if empty, uses EMERGENT_LLM_KEY
     use_emergent_key: bool = True
+    rate_limit_per_hour: int = 10   # per end user; admins exempt; 0 = unlimited
+
+class SNCredentials(BaseModel):
+    username: str
+    password: str
+
+class Feedback(BaseModel):
+    rating: str  # up | down
+    comment: str = ""
 
 class Application(BaseModel):
     id: str = Field(default_factory=lambda: new_id("app"))
@@ -116,11 +128,13 @@ class AnalysisRecord(BaseModel):
     id: str = Field(default_factory=lambda: new_id("an"))
     incident_number: str
     incident_sys_id: str
+    incident_short_description: str = ""
     user_email: str
     model: str
     confidence: str
     status: str
     result: Dict[str, Any]
+    feedback: Optional[Dict[str, Any]] = None
     created_at: str = Field(default_factory=lambda: iso(utcnow()))
 
 # ---------- Auth ----------
@@ -230,65 +244,115 @@ async def logout(request: Request, response: Response):
 async def get_config(kind: str, default: Dict[str, Any]) -> Dict[str, Any]:
     doc = await db.configs.find_one({"kind": kind}, {"_id": 0})
     if not doc: return default
-    return {k: v for k, v in doc.items() if k != "kind"}
+    return {**default, **{k: v for k, v in doc.items() if k != "kind"}}
 
 async def set_config(kind: str, data: Dict[str, Any]):
     await db.configs.update_one({"kind": kind}, {"$set": {**data, "kind": kind}}, upsert=True)
 
 # ---------- ServiceNow ----------
-def _sn_masked(cfg: Dict[str, Any]) -> Dict[str, Any]:
-    out = {**cfg}
-    if out.get("password"): out["password"] = "••••••••"
-    return out
-
 async def _sn_cfg() -> ServiceNowConfig:
     d = await get_config("servicenow", ServiceNowConfig().model_dump())
+    d.pop("username", None); d.pop("password", None)
     return ServiceNowConfig(**d)
 
-async def _sn_request(cfg: ServiceNowConfig, method: str, path: str, params: Optional[Dict]=None):
+async def _user_sn_auth(user: Dict[str, Any]):
+    doc = await db.sn_credentials.find_one({"user_id": user["user_id"]}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=428, detail="ServiceNow credentials required")
+    return (doc["username"], decrypt(doc["password"]))
+
+async def _sn_request(cfg: ServiceNowConfig, auth, method: str, path: str, params: Optional[Dict]=None):
     if not cfg.instance_url:
         raise HTTPException(status_code=400, detail="ServiceNow not configured")
     url = cfg.instance_url.rstrip("/") + path
-    auth = (cfg.username, cfg.password) if cfg.username else None
-    async with httpx.AsyncClient(timeout=20) as c:
-        r = await c.request(method, url, params=params, auth=auth, headers={"Accept": "application/json"})
+    try:
+        async with httpx.AsyncClient(timeout=20) as c:
+            r = await c.request(method, url, params=params, auth=auth, headers={"Accept": "application/json"})
+    except httpx.HTTPError as e:
+        raise HTTPException(status_code=424, detail=f"ServiceNow unreachable: {type(e).__name__}")
     if r.status_code == 401:
-        raise HTTPException(status_code=502, detail="ServiceNow authentication failed")
+        raise HTTPException(status_code=424, detail="ServiceNow authentication failed — check your ServiceNow username/password")
     if r.status_code >= 500:
-        raise HTTPException(status_code=502, detail="ServiceNow unavailable")
+        raise HTTPException(status_code=424, detail="ServiceNow unavailable")
     if r.status_code >= 400:
-        raise HTTPException(status_code=502, detail=f"ServiceNow error: {r.status_code}")
-    return r.json()
+        raise HTTPException(status_code=424, detail=f"ServiceNow error: {r.status_code}")
+    try:
+        return r.json()
+    except ValueError:
+        raise HTTPException(status_code=424, detail="ServiceNow returned non-JSON (instance may be hibernating — wake it in the developer portal)")
+
+def _normalize_instance_url(url: str) -> str:
+    url = url.strip()
+    if not url: return ""
+    if not url.startswith("http"): url = "https://" + url
+    return re.sub(r"/api/now.*$", "", url).rstrip("/")
 
 @api.get("/admin/servicenow/config")
 async def get_sn_config(_: dict = Depends(require_admin)):
-    d = await get_config("servicenow", ServiceNowConfig().model_dump())
-    return _sn_masked(d)
+    return (await _sn_cfg()).model_dump()
 
 @api.put("/admin/servicenow/config")
 async def put_sn_config(cfg: ServiceNowConfig, admin=Depends(require_admin)):
-    existing = await get_config("servicenow", ServiceNowConfig().model_dump())
     payload = cfg.model_dump()
-    # allow masked password to preserve existing
-    if payload.get("password") in ("", "••••••••"):
-        payload["password"] = existing.get("password", "")
-    await set_config("servicenow", payload)
+    payload["instance_url"] = _normalize_instance_url(payload["instance_url"])
+    await db.configs.replace_one({"kind": "servicenow"}, {**payload, "kind": "servicenow"}, upsert=True)
     await audit("config.servicenow.update", admin["email"], {"instance_url": payload.get("instance_url")})
-    return _sn_masked(payload)
+    return payload
 
 @api.post("/admin/servicenow/test")
 async def test_sn(admin=Depends(require_admin)):
     cfg = await _sn_cfg()
     try:
-        data = await _sn_request(cfg, "GET", f"/api/now/table/{cfg.table}", {"sysparm_limit": 1})
+        auth = await _user_sn_auth(admin)
+        data = await _sn_request(cfg, auth, "GET", f"/api/now/table/{cfg.table}", {"sysparm_limit": 1})
         await audit("servicenow.test", admin["email"], {"ok": True})
         return {"ok": True, "message": "Connected", "sample_count": len(data.get("result", []))}
     except HTTPException as e:
         await audit("servicenow.test", admin["email"], {"ok": False, "error": e.detail})
         return {"ok": False, "message": e.detail}
 
+# ---------- Per-user ServiceNow credentials ----------
+@api.get("/me/servicenow")
+async def my_sn_status(request: Request):
+    user = await require_user(request)
+    cfg = await _sn_cfg()
+    doc = await db.sn_credentials.find_one({"user_id": user["user_id"]}, {"_id": 0})
+    return {"configured": bool(cfg.instance_url), "instance_url": cfg.instance_url,
+            "has_credentials": bool(doc), "username": doc["username"] if doc else ""}
+
+@api.put("/me/servicenow")
+async def my_sn_save(body: SNCredentials, request: Request):
+    user = await require_user(request)
+    if not body.username.strip() or not body.password:
+        raise HTTPException(status_code=400, detail="Username and password are required")
+    await db.sn_credentials.update_one(
+        {"user_id": user["user_id"]},
+        {"$set": {"user_id": user["user_id"], "username": body.username.strip(),
+                  "password": encrypt(body.password), "updated_at": iso(utcnow())}},
+        upsert=True)
+    await audit("servicenow.credentials.save", user["email"], {"username": body.username.strip()})
+    return {"ok": True, "username": body.username.strip()}
+
+@api.delete("/me/servicenow")
+async def my_sn_delete(request: Request):
+    user = await require_user(request)
+    await db.sn_credentials.delete_one({"user_id": user["user_id"]})
+    await audit("servicenow.credentials.delete", user["email"])
+    return {"ok": True}
+
+@api.post("/me/servicenow/test")
+async def my_sn_test(request: Request):
+    user = await require_user(request)
+    cfg = await _sn_cfg()
+    try:
+        auth = await _user_sn_auth(user)
+        data = await _sn_request(cfg, auth, "GET", f"/api/now/table/{cfg.table}", {"sysparm_limit": 1})
+        return {"ok": True, "message": "Connected", "sample_count": len(data.get("result", []))}
+    except HTTPException as e:
+        return {"ok": False, "message": e.detail}
+
 # ---------- Incidents (End User + Admin) ----------
-async def _list_incidents(user_query: Optional[str], page: int, page_size: int):
+async def _list_incidents(user: Dict[str, Any], user_query: Optional[str], page: int, page_size: int):
     cfg = await _sn_cfg()
     # If SN not configured -> demo dataset
     demo_mode = not cfg.instance_url
@@ -301,6 +365,7 @@ async def _list_incidents(user_query: Optional[str], page: int, page_size: int):
         start = (page-1) * page_size
         return {"items": demo[start:start+page_size], "total": total, "demo": True}
     # Real SN
+    auth = await _user_sn_auth(user)
     q = cfg.active_query
     if user_query:
         # add search on number/short_description
@@ -312,20 +377,35 @@ async def _list_incidents(user_query: Optional[str], page: int, page_size: int):
         "sysparm_offset": (page - 1) * page_size,
         "sysparm_display_value": "true",
     }
-    data = await _sn_request(cfg, "GET", f"/api/now/table/{cfg.table}", params)
+    data = await _sn_request(cfg, auth, "GET", f"/api/now/table/{cfg.table}", params)
     # total count via HEAD-style stats
     count_params = {"sysparm_query": q, "sysparm_count": "true"}
     try:
-        stats = await _sn_request(cfg, "GET", f"/api/now/stats/{cfg.table}", count_params)
+        stats = await _sn_request(cfg, auth, "GET", f"/api/now/stats/{cfg.table}", count_params)
         total = int(stats.get("result", {}).get("stats", {}).get("count", 0))
     except Exception:
         total = len(data.get("result", []))
-    return {"items": data.get("result", []), "total": total, "demo": False}
+    items = data.get("result", [])
+    if not cfg.show_work_notes:
+        for it in items:
+            it.pop("work_notes", None); it.pop("comments", None)
+    return {"items": items, "total": total, "demo": False}
 
 @api.get("/incidents")
 async def list_incidents(request: Request, q: Optional[str] = None, page: int = 1, page_size: int = 25):
-    await require_user(request)
-    return await _list_incidents(q, page, max(1, min(page_size, 100)))
+    user = await require_user(request)
+    return await _list_incidents(user, q, page, max(1, min(page_size, 100)))
+
+async def _fetch_incident(user: Dict[str, Any], cfg: ServiceNowConfig, sys_id: str) -> Dict[str, Any]:
+    if not cfg.instance_url:
+        doc = await db.demo_incidents.find_one({"sys_id": sys_id}, {"_id": 0})
+    else:
+        auth = await _user_sn_auth(user)
+        data = await _sn_request(cfg, auth, "GET", f"/api/now/table/{cfg.table}/{sys_id}",
+                                 {"sysparm_fields": ",".join(cfg.fields), "sysparm_display_value": "true"})
+        doc = data.get("result", {})
+    if not doc: raise HTTPException(status_code=404, detail="Incident not found")
+    return doc
 
 @api.get("/incidents/{sys_id}")
 async def get_incident(sys_id: str, request: Request):
@@ -333,16 +413,7 @@ async def get_incident(sys_id: str, request: Request):
     cfg = await _sn_cfg()
     if not re.match(r"^[a-zA-Z0-9_\-]+$", sys_id):
         raise HTTPException(status_code=400, detail="Invalid incident id")
-    if not cfg.instance_url:
-        doc = await db.demo_incidents.find_one({"sys_id": sys_id}, {"_id": 0})
-        if not doc: raise HTTPException(status_code=404, detail="Incident not found")
-        if not cfg.show_work_notes:
-            doc.pop("work_notes", None); doc.pop("comments", None)
-        return doc
-    data = await _sn_request(cfg, "GET", f"/api/now/table/{cfg.table}/{sys_id}",
-                              {"sysparm_fields": ",".join(cfg.fields), "sysparm_display_value": "true"})
-    doc = data.get("result", {})
-    if not doc: raise HTTPException(status_code=404, detail="Incident not found")
+    doc = await _fetch_incident(user, cfg, sys_id)
     if not cfg.show_work_notes:
         doc.pop("work_notes", None); doc.pop("comments", None)
     return doc
@@ -426,7 +497,38 @@ async def _build_context(inc: Dict[str, Any]) -> Dict[str, Any]:
     rcas = sorted(rcas, key=lambda x: x["_score"], reverse=True)[:5]
     rcas = [r for r in rcas if r["_score"] > 0][:5]
 
-    return {"historical": hist, "kb": kbs, "rcas": rcas}
+    fb = await db.analyses.find({"feedback": {"$ne": None}}, {"_id": 0}).sort("created_at", -1).to_list(500)
+    for f in fb:
+        f["_score"] = _score(f"{f.get('incident_short_description','')} {f.get('feedback',{}).get('comment','')}", toks)
+    fb = [f for f in sorted(fb, key=lambda x: x["_score"], reverse=True) if f["_score"] > 0][:3]
+    feedback = [{
+        "incident": f.get("incident_number"),
+        "analyst_rating": "helpful" if f["feedback"].get("rating") == "up" else "not helpful",
+        "analyst_comment": f["feedback"].get("comment", ""),
+        "previous_ai_root_cause": (f.get("result") or {}).get("likely_root_cause", ""),
+    } for f in fb]
+
+    return {"historical": hist, "kb": kbs, "rcas": rcas, "feedback": feedback}
+
+async def _check_rate_limit(user: Dict[str, Any], ai_cfg: AIConfig):
+    if user.get("role") == "admin" or ai_cfg.rate_limit_per_hour <= 0:
+        return
+    since = iso(utcnow() - timedelta(hours=1))
+    used = await db.analyses.count_documents({"user_email": user["email"], "status": "success", "created_at": {"$gte": since}})
+    if used >= ai_cfg.rate_limit_per_hour:
+        oldest = await db.analyses.find({"user_email": user["email"], "status": "success", "created_at": {"$gte": since}}, {"_id": 0, "created_at": 1}).sort("created_at", 1).to_list(1)
+        reset_at = datetime.fromisoformat(oldest[0]["created_at"]) + timedelta(hours=1) if oldest else utcnow()
+        raise HTTPException(status_code=429, detail=f"Rate limit reached ({ai_cfg.rate_limit_per_hour}/hour). Try again after {reset_at.strftime('%H:%M UTC')}.")
+
+@api.get("/analyses/quota")
+async def my_quota(request: Request):
+    user = await require_user(request)
+    ai_cfg = await _ai_cfg()
+    if user.get("role") == "admin" or ai_cfg.rate_limit_per_hour <= 0:
+        return {"limit": 0, "used": 0, "remaining": None}
+    since = iso(utcnow() - timedelta(hours=1))
+    used = await db.analyses.count_documents({"user_email": user["email"], "status": "success", "created_at": {"$gte": since}})
+    return {"limit": ai_cfg.rate_limit_per_hour, "used": used, "remaining": max(0, ai_cfg.rate_limit_per_hour - used)}
 
 @api.post("/incidents/{sys_id}/analyze")
 async def analyze(sys_id: str, request: Request):
@@ -434,17 +536,11 @@ async def analyze(sys_id: str, request: Request):
     cfg = await _sn_cfg()
     if not re.match(r"^[a-zA-Z0-9_\-]+$", sys_id):
         raise HTTPException(status_code=400, detail="Invalid incident id")
-    # fetch
-    if cfg.instance_url:
-        data = await _sn_request(cfg, "GET", f"/api/now/table/{cfg.table}/{sys_id}",
-                                  {"sysparm_fields": ",".join(cfg.fields), "sysparm_display_value": "true"})
-        inc = data.get("result", {})
-    else:
-        inc = await db.demo_incidents.find_one({"sys_id": sys_id}, {"_id": 0})
-    if not inc: raise HTTPException(status_code=404, detail="Incident not found")
+    ai_cfg = await _ai_cfg()
+    await _check_rate_limit(user, ai_cfg)
+    inc = await _fetch_incident(user, cfg, sys_id)
 
     ctx = await _build_context(inc)
-    ai_cfg = await _ai_cfg()
 
     def _val(x):
         if isinstance(x, dict): return x.get("display_value","")
@@ -470,7 +566,9 @@ async def analyze(sys_id: str, request: Request):
         "Return STRICT JSON only, with keys: likely_root_cause, business_impact, "
         "recommended_immediate_action, preventive_action, confidence (one of High/Medium/Low), "
         "confidence_explanation. Each value is plain text (not markdown). "
-        "Root cause must clearly say it is AI-assisted and should be validated with logs/telemetry."
+        "Root cause must clearly say it is AI-assisted and should be validated with logs/telemetry. "
+        "If PAST ANALYST FEEDBACK is provided, treat 'not helpful' items as corrections: avoid repeating those "
+        "conclusions and incorporate the analyst comments."
     )
 
     parts = [
@@ -482,6 +580,8 @@ async def analyze(sys_id: str, request: Request):
         json.dumps([{k:v for k,v in k2.items() if k!='_score'} for k2 in ctx["kb"]], indent=2) or "None",
         "\n### INTERNAL RCA REPOSITORY (top matches)",
         json.dumps([{k:v for k,v in r.items() if k!='_score'} for r in ctx["rcas"]], indent=2) or "None",
+        "\n### PAST ANALYST FEEDBACK ON SIMILAR ANALYSES",
+        json.dumps(ctx["feedback"], indent=2) if ctx["feedback"] else "None",
         "\nReturn STRICT JSON only. No prose outside JSON."
     ]
     user_msg = "\n".join(parts)
@@ -509,6 +609,7 @@ async def analyze(sys_id: str, request: Request):
     record = AnalysisRecord(
         incident_number=incident_summary["number"] or sys_id,
         incident_sys_id=sys_id,
+        incident_short_description=incident_summary["short_description"],
         user_email=user["email"],
         model=f"{ai_cfg.provider}/{ai_cfg.model}",
         confidence=str(parsed.get("confidence","Medium")),
@@ -517,7 +618,49 @@ async def analyze(sys_id: str, request: Request):
     )
     await db.analyses.insert_one(record.model_dump())
     await audit("incident.analyze", user["email"], {"incident": incident_summary["number"], "status": status})
-    return {"analysis": parsed, "incident_number": incident_summary["number"], "model": record.model}
+    return {"analysis": parsed, "analysis_id": record.id, "incident_number": incident_summary["number"], "model": record.model}
+
+@api.post("/analyses/{analysis_id}/feedback")
+async def analysis_feedback(analysis_id: str, body: Feedback, request: Request):
+    user = await require_user(request)
+    if body.rating not in ("up", "down"):
+        raise HTTPException(status_code=400, detail="rating must be 'up' or 'down'")
+    fb = {"rating": body.rating, "comment": body.comment.strip()[:1000], "by": user["email"], "ts": iso(utcnow())}
+    res = await db.analyses.update_one({"id": analysis_id, "user_email": user["email"]}, {"$set": {"feedback": fb}})
+    if res.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Analysis not found")
+    await audit("analysis.feedback", user["email"], {"analysis_id": analysis_id, "rating": body.rating})
+    return {"ok": True, "feedback": fb}
+
+# ---------- KB document upload ----------
+MAX_UPLOAD_BYTES = 10 * 1024 * 1024
+
+def _extract_text(filename: str, data: bytes) -> str:
+    ext = Path(filename).suffix.lower()
+    if ext == ".pdf":
+        from pypdf import PdfReader
+        import io
+        reader = PdfReader(io.BytesIO(data))
+        return "\n\n".join((p.extract_text() or "") for p in reader.pages)
+    if ext in (".md", ".markdown", ".txt"):
+        return data.decode("utf-8", errors="replace")
+    raise HTTPException(status_code=400, detail="Unsupported file type. Use PDF, Markdown or TXT.")
+
+@api.post("/admin/kb/upload")
+async def kb_upload(file: UploadFile = File(...), application: str = Form(""), tags: str = Form(""), admin=Depends(require_admin)):
+    data = await file.read()
+    if len(data) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="File exceeds 10 MB limit")
+    text = _extract_text(file.filename or "upload.txt", data).strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="No readable text found in document")
+    title = Path(file.filename or "Document").stem.replace("_", " ").replace("-", " ").strip() or "Document"
+    tag_list = [t.strip() for t in tags.split(",") if t.strip()]
+    article = KBArticle(title=title, application=application, tags=tag_list, content=text[:200_000])
+    doc = article.model_dump()
+    await db.kb_articles.insert_one({**doc, "source_file": file.filename})
+    await audit("kb.upload", admin["email"], {"id": doc["id"], "file": file.filename, "chars": len(text)})
+    return {**doc, "source_file": file.filename}
 
 # ---------- Admin CRUD helpers ----------
 def _crud_routes(name: str, collection: str, model_cls):
@@ -575,7 +718,11 @@ async def admin_dashboard(_: dict = Depends(require_admin)):
     apps = await db.applications.count_documents({})
     hist = await db.historical_incidents.count_documents({})
     recent = await db.analyses.find({}, {"_id": 0}).sort("created_at", -1).to_list(5)
-    return {"users": users, "analyses": analyses, "kb": kb, "rca": rca, "applications": apps, "historical": hist, "recent_analyses": recent}
+    fb_total = await db.analyses.count_documents({"feedback": {"$ne": None}})
+    fb_up = await db.analyses.count_documents({"feedback.rating": "up"})
+    helpful_rate = round(100 * fb_up / fb_total) if fb_total else None
+    return {"users": users, "analyses": analyses, "kb": kb, "rca": rca, "applications": apps, "historical": hist,
+            "recent_analyses": recent, "feedback_total": fb_total, "feedback_up": fb_up, "helpful_rate": helpful_rate}
 
 # ---------- Seed demo data ----------
 DEMO_INCIDENTS = [

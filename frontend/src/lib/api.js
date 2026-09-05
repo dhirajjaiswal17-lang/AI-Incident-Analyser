@@ -8,6 +8,14 @@ export const api = axios.create({
   withCredentials: true,
 });
 
+api.interceptors.response.use(
+  (r) => r,
+  (err) => {
+    if (err?.response?.status === 428) window.dispatchEvent(new CustomEvent("sn-creds-required"));
+    return Promise.reject(err);
+  }
+);
+
 export const authApi = {
   me: () => api.get("/auth/me").then((r) => r.data),
   session: (session_id) => api.post("/auth/session", { session_id }).then((r) => r.data),

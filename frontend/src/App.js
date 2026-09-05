@@ -15,6 +15,7 @@ import AIConfig from "@/pages/admin/AIConfig";
 import CrudPage from "@/pages/admin/CrudPage";
 import { AnalysisHistory, AuditLogs } from "@/pages/admin/LogsPages";
 import IntegrationGuide from "@/pages/admin/IntegrationGuide";
+import { KBUploadZone } from "@/components/KBUploadZone";
 import { BookOpen, ClipboardList, Layers, History } from "lucide-react";
 
 function Protected({ children, adminOnly = false }) {
@@ -57,7 +58,7 @@ function AppRouter() {
           />
         </Protected>} />
         <Route path="/admin/kb" element={<Protected adminOnly>
-          <CrudPage title="Knowledge Base" subtitle="Runbooks and playbooks used as AI grounding." icon={BookOpen} endpoint="kb" testidPrefix="kb"
+          <CrudPage title="Knowledge Base" subtitle="Runbooks and playbooks used as AI grounding." icon={BookOpen} endpoint="kb" testidPrefix="kb" extra={KBUploadZone}
             schema={[
               { key: "title", label: "Title" },
               { key: "application", label: "Application" },

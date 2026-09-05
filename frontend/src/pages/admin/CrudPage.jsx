@@ -12,7 +12,7 @@ import { toast } from "sonner";
  * Generic admin CRUD page.
  * schema: [{key,label,type: "text"|"number"|"textarea"|"tags"}]
  */
-export default function CrudPage({ title, subtitle, icon: Icon, endpoint, schema, testidPrefix, listColumns }) {
+export default function CrudPage({ title, subtitle, icon: Icon, endpoint, schema, testidPrefix, listColumns, extra: Extra }) {
   const [items, setItems] = useState([]);
   const [q, setQ] = useState("");
   const [editing, setEditing] = useState(null);
@@ -78,6 +78,8 @@ export default function CrudPage({ title, subtitle, icon: Icon, endpoint, schema
           <Plus className="h-4 w-4 mr-2" /> New
         </Button>
       </div>
+
+      {Extra && <Extra onUploaded={load} />}
 
       <div className="mt-6 relative max-w-md">
         <Search className="h-4 w-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />

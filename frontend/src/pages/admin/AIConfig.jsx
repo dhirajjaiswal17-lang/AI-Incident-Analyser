@@ -84,6 +84,9 @@ export default function AIConfig() {
         <Field label="Max Tokens">
           <Input type="number" value={cfg.max_tokens} onChange={e => setCfg({ ...cfg, max_tokens: parseInt(e.target.value || "0") })} className="bg-slate-900 border-slate-800" data-testid="ai-maxtokens-input" />
         </Field>
+        <Field label="Analyses per user per hour (0 = unlimited, admins exempt)">
+          <Input type="number" min={0} value={cfg.rate_limit_per_hour ?? 10} onChange={e => setCfg({ ...cfg, rate_limit_per_hour: parseInt(e.target.value || "0") })} className="bg-slate-900 border-slate-800" data-testid="ai-ratelimit-input" />
+        </Field>
         <div className="flex items-center gap-3 pt-2">
           <Button onClick={save} className="bg-cyan-600 hover:bg-cyan-500 text-white" data-testid="ai-save-btn">Save Configuration</Button>
           <Button variant="outline" onClick={test} disabled={testing} className="border-slate-700 bg-slate-900 text-slate-200 hover:bg-slate-800" data-testid="ai-test-btn">

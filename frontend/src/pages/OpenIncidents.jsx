@@ -4,8 +4,9 @@ import { useNavigate } from "react-router-dom";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { RefreshCw, Search, Activity, ChevronLeft, ChevronRight } from "lucide-react";
+import { RefreshCw, Search, Activity, ChevronLeft, ChevronRight, KeyRound } from "lucide-react";
 import { toast } from "sonner";
+import { openSNCredentials, SN_CREDS_SAVED } from "@/components/ServiceNowCredentialsDialog";
 
 function priorityBadge(p) {
   const s = String(p || "").toLowerCase();
@@ -30,23 +31,37 @@ export default function OpenIncidents() {
   const [loading, setLoading] = useState(true);
   const [demo, setDemo] = useState(false);
   const [priorityFilter, setPriorityFilter] = useState("all");
+  const [needCreds, setNeedCreds] = useState(false);
   const nav = useNavigate();
 
   const load = async (q = query, p = page) => {
-    setLoading(true);
+    setLoading(true); setNeedCreds(false);
     try {
       const { data } = await api.get("/incidents", { params: { q: q || undefined, page: p, page_size: pageSize } });
       setItems(data.items || []);
       setTotal(data.total || 0);
       setDemo(!!data.demo);
     } catch (e) {
-      toast.error(e?.response?.data?.detail || "Failed to load incidents");
+      if (e?.response?.status === 428) { setNeedCreds(true); setItems([]); setTotal(0); }
+      else if (e?.response?.status === 424) {
+        setItems([]); setTotal(0);
+        const msg = e.response.data?.detail || "ServiceNow error";
+        if (msg.toLowerCase().includes("authentication")) setNeedCreds(true);
+        toast.error(msg, { duration: 8000 });
+      }
+      else toast.error(e?.response?.data?.detail || "Failed to load incidents");
     } finally {
       setLoading(false);
     }
   };
 
-  useEffect(() => { load(); /* eslint-disable-next-line */ }, [page]);
+  useEffect(() => {
+    load();
+    const onSaved = () => load();
+    window.addEventListener(SN_CREDS_SAVED, onSaved);
+    return () => window.removeEventListener(SN_CREDS_SAVED, onSaved);
+    /* eslint-disable-next-line */
+  }, [page]);
 
   const filtered = useMemo(() => {
     if (priorityFilter === "all") return items;
@@ -107,6 +122,17 @@ export default function OpenIncidents() {
           ))}
         </div>
       </div>
+
+      {needCreds && (
+        <div className="mt-6 rounded-xl border border-amber-500/40 bg-amber-500/10 p-5 flex items-center gap-4" data-testid="sn-creds-banner">
+          <KeyRound className="h-6 w-6 text-amber-300 shrink-0" />
+          <div className="flex-1">
+            <div className="font-semibold text-amber-100">ServiceNow login required</div>
+            <div className="text-sm text-amber-200/80 mt-0.5">Incidents are fetched with your own ServiceNow account. Enter your username and password to continue.</div>
+          </div>
+          <Button onClick={openSNCredentials} className="bg-amber-500 hover:bg-amber-400 text-slate-950 font-semibold" data-testid="sn-creds-banner-btn">Enter credentials</Button>
+        </div>
+      )}
 
       <div className="mt-6 overflow-hidden rounded-xl border border-slate-800 bg-slate-950/50">
         <div className="overflow-x-auto">

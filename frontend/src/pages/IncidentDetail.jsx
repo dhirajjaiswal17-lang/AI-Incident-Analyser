@@ -3,8 +3,10 @@ import { useParams, useNavigate } from "react-router-dom";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { ArrowLeft, Sparkles, ShieldCheck, AlertTriangle, Wrench, GitBranch, TrendingUp } from "lucide-react";
+import { ArrowLeft, Sparkles, ShieldCheck, AlertTriangle, Wrench, GitBranch, TrendingUp, KeyRound, Gauge } from "lucide-react";
 import { toast } from "sonner";
+import { AnalysisFeedback } from "@/components/AnalysisFeedback";
+import { openSNCredentials, SN_CREDS_SAVED } from "@/components/ServiceNowCredentialsDialog";
 
 function val(v) {
   if (v == null) return "";
@@ -25,35 +27,56 @@ export default function IncidentDetail() {
   const [loading, setLoading] = useState(true);
   const [analyzing, setAnalyzing] = useState(false);
   const [analysis, setAnalysis] = useState(null);
+  const [analysisId, setAnalysisId] = useState(null);
+  const [quota, setQuota] = useState(null);
+  const [needCreds, setNeedCreds] = useState(false);
+
+  const loadQuota = () => api.get("/analyses/quota").then(r => setQuota(r.data)).catch(() => {});
 
   useEffect(() => {
-    (async () => {
+    const load = async () => {
+      setLoading(true); setNeedCreds(false);
       try {
         const { data } = await api.get(`/incidents/${sysId}`);
         setInc(data);
       } catch (e) {
-        toast.error(e?.response?.data?.detail || "Failed to load incident");
+        if (e?.response?.status === 428) setNeedCreds(true);
+        else toast.error(e?.response?.data?.detail || "Failed to load incident");
       } finally {
         setLoading(false);
       }
-    })();
+    };
+    load(); loadQuota();
+    window.addEventListener(SN_CREDS_SAVED, load);
+    return () => window.removeEventListener(SN_CREDS_SAVED, load);
   }, [sysId]);
 
   const analyze = async () => {
-    setAnalyzing(true); setAnalysis(null);
+    setAnalyzing(true); setAnalysis(null); setAnalysisId(null);
     try {
       const { data } = await api.post(`/incidents/${sysId}/analyze`);
       setAnalysis(data.analysis);
+      setAnalysisId(data.analysis_id);
       toast.success("AI analysis complete");
     } catch (e) {
-      toast.error(e?.response?.data?.detail || "Analysis failed");
+      if (e?.response?.status === 429) toast.error(e.response.data.detail, { duration: 8000 });
+      else if (e?.response?.status !== 428) toast.error(e?.response?.data?.detail || "Analysis failed");
     } finally {
-      setAnalyzing(false);
+      setAnalyzing(false); loadQuota();
     }
   };
 
   if (loading) return <div className="p-10 text-slate-400">Loading incident…</div>;
+  if (needCreds) return (
+    <div className="p-10 max-w-lg mx-auto text-center" data-testid="incident-needs-creds">
+      <KeyRound className="h-8 w-8 text-amber-400 mx-auto" />
+      <h2 className="mt-3 font-semibold text-lg">ServiceNow login required</h2>
+      <p className="mt-2 text-sm text-slate-400">Enter your ServiceNow username and password to load this incident.</p>
+      <Button onClick={openSNCredentials} className="mt-4 bg-cyan-600 hover:bg-cyan-500 text-white" data-testid="incident-open-creds-btn">Enter credentials</Button>
+    </div>
+  );
   if (!inc) return <div className="p-10 text-slate-400">Incident not found</div>;
+  const exhausted = quota?.limit > 0 && quota.remaining === 0;
 
   return (
     <div className="p-6 lg:p-8 max-w-[1400px] mx-auto">
@@ -74,15 +97,22 @@ export default function IncidentDetail() {
             <Badge className="bg-slate-800 border border-slate-700 text-slate-200">{val(inc.assignment_group)}</Badge>
           </div>
         </div>
-        <Button
-          data-testid="analyze-incident-btn"
-          disabled={analyzing}
-          onClick={analyze}
-          className="bg-gradient-to-r from-cyan-600 to-indigo-600 hover:from-cyan-500 hover:to-indigo-500 text-white font-semibold h-11 px-6 shadow-lg shadow-cyan-500/20"
-        >
-          <Sparkles className={`h-4 w-4 mr-2 ${analyzing ? "animate-spin" : ""}`} />
-          {analyzing ? "Analyzing…" : "Analyze Incident"}
-        </Button>
+        <div className="flex flex-col items-end gap-2">
+          <Button
+            data-testid="analyze-incident-btn"
+            disabled={analyzing || exhausted}
+            onClick={analyze}
+            className="bg-gradient-to-r from-cyan-600 to-indigo-600 hover:from-cyan-500 hover:to-indigo-500 text-white font-semibold h-11 px-6 shadow-lg shadow-cyan-500/20"
+          >
+            <Sparkles className={`h-4 w-4 mr-2 ${analyzing ? "animate-spin" : ""}`} />
+            {analyzing ? "Analyzing…" : "Analyze Incident"}
+          </Button>
+          {quota?.limit > 0 && (
+            <div className={`flex items-center gap-1.5 text-[11px] font-mono ${exhausted ? "text-rose-300" : "text-slate-400"}`} data-testid="analyze-quota">
+              <Gauge className="h-3 w-3" /> {quota.remaining} of {quota.limit} analyses left this hour
+            </div>
+          )}
+        </div>
       </div>
 
       <div className="mt-8 grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -152,6 +182,7 @@ export default function IncidentDetail() {
                   <p className="mt-2 text-sm text-slate-300">{analysis.confidence_explanation}</p>
                 </div>
               </div>
+              {analysisId && <AnalysisFeedback key={analysisId} analysisId={analysisId} />}
             </div>
           )}
         </div>

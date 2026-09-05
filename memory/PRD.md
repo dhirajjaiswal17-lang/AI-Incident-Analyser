@@ -22,25 +22,30 @@ Build a production-ready AI Incident Analyzer web app that integrates ServiceNow
 - **Backend**: FastAPI (`/app/backend/server.py`) + MongoDB (motor). All routes prefixed `/api`.
 - **Frontend**: React + shadcn/ui + Tailwind. Router with OAuth hash handling.
 - **LLM**: `emergentintegrations` LlmChat with Emergent Universal LLM Key. Provider/model configurable in Admin → AI.
-- **RAG**: keyword scoring over Historical Incidents + KB + RCA (top-5 each, only positive scores).
+- **RAG**: keyword scoring over Historical Incidents + KB + RCA (top-5 each) + past analyst feedback (top-3).
+- **ServiceNow auth model**: Admin sets instance URL only; each user stores their OWN SN username/password (Fernet-encrypted, `CREDENTIALS_SECRET` in backend/.env) in `sn_credentials`. Missing → HTTP 428; rejected → HTTP 424 (502 is swallowed by ingress).
 
-## Implementation Log (Feb 2026)
+## Implementation Log
 - 2026-02-05: v1.0 shipped.
   - Auth: Emergent Google OAuth; roles admin/end_user; first user auto-admin; ADMIN_EMAILS allowlist.
   - End User: `/incidents` list (search, priority filter, pagination) + `/incidents/:sysId` detail + Analyze.
   - Admin: dashboard, ServiceNow config + test, AI config + test, CRUD (Applications, KB, RCA, Historical), Analysis History, Audit Logs, Integration Guide.
   - Seeded demo: 8 active incidents (banking scenarios), 7 historical, 7 KB, 3 RCA, 7 applications.
-  - Testing agent: 51/51 backend + 100% frontend pass. Fixed ObjectId injection in CRUD create; PUT returns 404 on missing id; priority badge nowrap.
+  - Testing agent: 51/51 backend + 100% frontend pass.
+- 2026-09-05: v1.1 — live ServiceNow + feedback + KB upload + rate limit (testing agent: 78/78 backend, frontend pass).
+  - Real ServiceNow connected: `https://dev414250.service-now.com` (41 active incidents). URL normalizer strips `/api/now/...`.
+  - Per-user SN credentials: `GET/PUT/DELETE /api/me/servicenow`, `POST /api/me/servicenow/test`; sidebar "ServiceNow Login" dialog auto-opens on 428; work_notes/comments stripped from list unless enabled.
+  - Analyst feedback: `POST /api/analyses/{id}/feedback` (up/down + comment, owner-only); Feedback column in Analysis History; Helpful Rate on dashboard; injected into prompt as "PAST ANALYST FEEDBACK".
+  - KB upload: `POST /api/admin/kb/upload` (PDF via pypdf / MD / TXT, ≤10MB) + drop zone on Admin → KB.
+  - Rate limit: `rate_limit_per_hour` in AI config (default 10, 0 = unlimited, admins exempt, failed AI runs don't count); `GET /api/analyses/quota`; 429 with reset time; quota shown on incident detail.
 
 ## Deferred / Backlog
-- P1: File/KB document upload (drop zone → parsed text into KB)
-- P1: Per-user rate limiting on analyze
-- P2: Vector-based semantic RAG (embeddings) with pgvector or FAISS
-- P2: Analyst feedback (thumbs up/down) on AI analyses
-- P2: Migrate FastAPI startup handlers to lifespan context manager
+- P2: KB upload de-duplication by source_file; stream size check before buffering
+- P2: Vector-based semantic RAG (embeddings)
+- P2: Split server.py into APIRouters; migrate on_event → lifespan
 - P3: Real-time updates via WebSockets/SSE
 
-## Next Actions (post-MVP)
-- Analyst feedback loop → improves prompt over time
-- Real ServiceNow smoke tests once instance URL is supplied
-- Auto-attach a matching RCA/KB link inside the analysis for one-click drill down
+## Next Actions
+- Auto-attach matching RCA/KB links inside the analysis for one-click drill down
+- Feedback analytics page (helpful rate by model / application over time)
+- Push analysis back to ServiceNow as a work note
