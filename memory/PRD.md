@@ -53,6 +53,8 @@ Build a production-ready AI Incident Analyzer web app that integrates ServiceNow
 
 - 2026-09-05: v1.4 — Similar Incidents panel. `GET /api/incidents/{sys_id}/similar` (no LLM, no quota) returns top historical (with fix preview), KB and RCA matches; shown on incident detail before Analyze with drill-down dialog. RAG relevance floor added (`_top`: score ≥ max(4, 50% of best)) — also de-noises the prompt context. Full pytest suite 132/132.
 
+- 2026-09-05: v1.4.1 — AI model fix. Google retired gemini-2.5-flash for new API keys (owner uses own Gemini key). Model lists updated to current (gemini-3-flash-preview default, gpt-5.4, claude-sonnet-4-6…); PUT ai/config auto-upgrades retired models for BYOK (`upgraded_from`); analyze returns 424 with friendly message on AI failure (record kept as status=error); 4000-token output floor + retry at 8000 for reasoning models. NOTE: owner's Gemini key is Google free tier (20 req/day/model) — recommend Universal Key or paid key for production.
+
 ## Deferred / Backlog
 - P2: KB upload de-duplication by source_file; stream size check before buffering
 - P2: Vector-based semantic RAG (embeddings)

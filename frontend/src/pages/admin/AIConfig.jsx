@@ -10,10 +10,12 @@ import { toast } from "sonner";
 import { Cpu, PlugZap } from "lucide-react";
 
 const MODELS = {
-  openai: ["gpt-4o-mini", "gpt-4o", "gpt-5", "gpt-5-mini"],
-  anthropic: ["claude-sonnet-4-5-20250929", "claude-3-5-sonnet-latest", "claude-haiku-4-5-latest"],
-  gemini: ["gemini-2.5-flash", "gemini-2.5-pro"],
+  openai: ["gpt-5.4", "gpt-5.4-mini", "gpt-5.5", "gpt-5-mini", "gpt-4.1", "gpt-4.1-mini", "gpt-4o", "o4-mini"],
+  anthropic: ["claude-sonnet-4-6", "claude-sonnet-5", "claude-opus-4-7", "claude-haiku-4-5-20251001", "claude-sonnet-4-5-20250929"],
+  gemini: ["gemini-3-flash-preview", "gemini-3.1-pro-preview", "gemini-3.5-flash", "gemini-2.5-pro", "gemini-2.5-flash"],
 };
+// Retired by the provider for new API keys; still work through the Emergent Universal Key.
+const DEPRECATED = { "gemini-2.5-flash": "gemini-3-flash-preview", "gemini-2.5-pro": "gemini-3.1-pro-preview", "gpt-4o-mini": "gpt-5.4-mini" };
 
 export default function AIConfig() {
   const [cfg, setCfg] = useState(null);
@@ -23,7 +25,10 @@ export default function AIConfig() {
   useEffect(() => { api.get("/admin/ai/config").then(r => setCfg(r.data)); }, []);
 
   const save = async () => {
-    try { const { data } = await api.put("/admin/ai/config", cfg); setCfg(data); toast.success("AI configuration saved"); }
+    try {
+      const { data } = await api.put("/admin/ai/config", cfg); setCfg(data);
+      data.upgraded_from ? toast.warning(`${data.upgraded_from} is retired for your own API key — switched to ${data.model}`, { duration: 8000 }) : toast.success("AI configuration saved");
+    }
     catch (e) { toast.error(e?.response?.data?.detail || "Save failed"); }
   };
   const test = async () => {
@@ -38,6 +43,8 @@ export default function AIConfig() {
 
   if (!cfg) return <div className="p-10 text-slate-400">Loading…</div>;
   const models = MODELS[cfg.provider] || [];
+  if (cfg.model && !models.includes(cfg.model)) models.push(cfg.model);
+  const deprecatedTo = !cfg.use_emergent_key ? DEPRECATED[cfg.model] : null;
 
   return (
     <div className="p-6 lg:p-8 max-w-3xl">
@@ -61,9 +68,14 @@ export default function AIConfig() {
             <Select value={cfg.model} onValueChange={(v) => setCfg({ ...cfg, model: v })}>
               <SelectTrigger className="bg-slate-900 border-slate-800" data-testid="ai-model-select"><SelectValue /></SelectTrigger>
               <SelectContent className="bg-slate-900 border-slate-800 text-slate-100">
-                {models.map(m => <SelectItem key={m} value={m}>{m}</SelectItem>)}
+                {models.map(m => <SelectItem key={m} value={m}>{m}{DEPRECATED[m] ? " (retired for own keys)" : ""}</SelectItem>)}
               </SelectContent>
             </Select>
+            {deprecatedTo && (
+              <div className="mt-2 text-xs text-amber-300" data-testid="ai-model-deprecated-warning">
+                {cfg.model} is no longer available to new Google/OpenAI API keys — it will be saved as <b>{deprecatedTo}</b>.
+              </div>
+            )}
           </Field>
         </div>
         <div className="flex items-center justify-between rounded-lg border border-slate-800 bg-slate-900/50 px-4 py-3">

@@ -72,7 +72,7 @@ class AIConfig(BaseModel):
     provider: str = "openai"        # openai | anthropic | gemini
     model: str = "gpt-4o-mini"
     temperature: float = 0.2
-    max_tokens: int = 1400
+    max_tokens: int = 4000
     api_key: str = ""               # if empty, uses EMERGENT_LLM_KEY
     use_emergent_key: bool = True
     rate_limit_per_hour: int = 10   # per end user; admins exempt; 0 = unlimited
@@ -533,27 +533,57 @@ async def get_ai_config(_: dict = Depends(require_admin)):
     if d.get("api_key"): d["api_key"] = "••••••••"
     return d
 
+DEPRECATED_MODELS = {
+    "gemini-2.5-flash": "gemini-3-flash-preview",
+    "gemini-2.5-flash-lite": "gemini-3-flash-preview",
+    "gemini-2.5-pro": "gemini-3.1-pro-preview",
+    "gemini-1.5-flash": "gemini-3-flash-preview",
+    "gemini-1.5-pro": "gemini-3.1-pro-preview",
+    "gpt-4o-mini": "gpt-5.4-mini",
+    "claude-3-5-sonnet-latest": "claude-sonnet-4-6",
+    "claude-haiku-4-5-latest": "claude-haiku-4-5-20251001",
+}
+
 @api.put("/admin/ai/config")
 async def put_ai_config(cfg: AIConfig, admin=Depends(require_admin)):
     existing = await get_config("ai", AIConfig().model_dump())
     payload = cfg.model_dump()
     if payload.get("api_key") in ("", "••••••••"):
         payload["api_key"] = existing.get("api_key", "")
+    upgraded_from = None
+    if not payload["use_emergent_key"] and payload["model"] in DEPRECATED_MODELS:
+        upgraded_from, payload["model"] = payload["model"], DEPRECATED_MODELS[payload["model"]]
     await set_config("ai", payload)
-    await audit("config.ai.update", admin["email"], {"provider": payload["provider"], "model": payload["model"]})
-    out = {**payload}
+    await audit("config.ai.update", admin["email"], {"provider": payload["provider"], "model": payload["model"], "upgraded_from": upgraded_from})
+    out = {**payload, "upgraded_from": upgraded_from}
     if out.get("api_key"): out["api_key"] = "••••••••"
     return out
 
-async def _run_llm(system_msg: str, user_msg: str, cfg: AIConfig) -> str:
+
+def _friendly_ai_error(e: Exception, cfg: AIConfig) -> str:
+    msg = str(e)
+    if "no longer available" in msg or "NotFoundError" in msg or "not found" in msg.lower():
+        alt = DEPRECATED_MODELS.get(cfg.model, "a current model")
+        return f"Model '{cfg.model}' is not available for this API key ({cfg.provider}). Switch to {alt} in Admin → AI Configuration."
+    if "AuthenticationError" in msg or "API key" in msg or "401" in msg or "PERMISSION_DENIED" in msg:
+        return f"{cfg.provider} rejected the API key. Check the key in Admin → AI Configuration or enable the Emergent Universal Key."
+    if "RateLimit" in msg or "429" in msg or "quota" in msg.lower():
+        return f"{cfg.provider} rate limit / quota exceeded for model {cfg.model}. Try again shortly."
+    return f"AI error ({cfg.provider}/{cfg.model}): {msg[:220]}"
+
+MIN_OUTPUT_TOKENS = 4000  # reasoning models spend tokens thinking before the JSON
+
+async def _run_llm(system_msg: str, user_msg: str, cfg: AIConfig, max_tokens: Optional[int] = None) -> str:
     from emergentintegrations.llm.chat import LlmChat, UserMessage
     api_key = os.environ["EMERGENT_LLM_KEY"] if cfg.use_emergent_key or not cfg.api_key else cfg.api_key
     session_id = new_id("chat")
     chat = LlmChat(api_key=api_key, session_id=session_id, system_message=system_msg)
     chat = chat.with_model(cfg.provider, cfg.model).with_params(
-        temperature=cfg.temperature, max_tokens=cfg.max_tokens,
+        temperature=cfg.temperature, max_tokens=max_tokens or max(cfg.max_tokens, MIN_OUTPUT_TOKENS),
     )
     resp = await chat.send_message(UserMessage(text=user_msg))
+    if resp is None or (isinstance(resp, str) and not resp.strip()):
+        raise RuntimeError(f"{cfg.provider}/{cfg.model} returned an empty response (max_tokens={cfg.max_tokens} may be too low for a reasoning model)")
     return resp if isinstance(resp, str) else str(resp)
 
 @api.post("/admin/ai/test")
@@ -566,7 +596,7 @@ async def test_ai(admin=Depends(require_admin)):
         return {"ok": ok, "message": "AI reachable" if ok else "Unexpected response", "sample": out[:200]}
     except Exception as e:
         await audit("ai.test", admin["email"], {"ok": False, "error": str(e)[:200]})
-        return {"ok": False, "message": f"AI error: {str(e)[:200]}"}
+        return {"ok": False, "message": _friendly_ai_error(e, cfg)}
 
 def _score(text: str, tokens: List[str], primary: str = "") -> int:
     t = text.lower(); p = primary.lower()
@@ -706,17 +736,23 @@ async def analyze(sys_id: str, request: Request):
 
     status = "success"
     parsed: Dict[str, Any] = {}
-    try:
-        raw = await _run_llm(system_msg, user_msg, ai_cfg)
-        # extract JSON
+    ai_error = ""
+    def _parse(raw: str) -> Dict[str, Any]:
         m = re.search(r"\{[\s\S]*\}", raw)
         if not m: raise ValueError("No JSON in AI response")
-        parsed = json.loads(m.group(0))
+        return json.loads(m.group(0))
+    try:
+        try:
+            parsed = _parse(await _run_llm(system_msg, user_msg, ai_cfg))
+        except (ValueError, json.JSONDecodeError):
+            logger.warning("AI output truncated/invalid JSON — retrying with larger output budget")
+            parsed = _parse(await _run_llm(system_msg, user_msg, ai_cfg, max_tokens=8000))
     except Exception as e:
         status = "error"
         logger.exception("AI analyze failed")
+        ai_error = _friendly_ai_error(e, ai_cfg)
         parsed = {
-            "likely_root_cause": f"AI analysis unavailable ({str(e)[:120]}). Please retry or check AI configuration.",
+            "likely_root_cause": f"AI analysis unavailable: {ai_error}",
             "business_impact": "Unable to determine automatically. Review incident and dependencies manually.",
             "recommended_immediate_action": "Engage on-call SRE for the affected application and check recent deployments/telemetry.",
             "preventive_action": "Ensure AI configuration is valid and re-run analysis once resolved.",
@@ -743,6 +779,8 @@ async def analyze(sys_id: str, request: Request):
     )
     await db.analyses.insert_one(record.model_dump())
     await audit("incident.analyze", user["email"], {"incident": incident_summary["number"], "status": status})
+    if status == "error":
+        raise HTTPException(status_code=424, detail=ai_error)
     return {"analysis": parsed, "analysis_id": record.id, "incident_number": incident_summary["number"], "model": record.model, "evidence": evidence}
 
 EVIDENCE_COLLECTIONS = {"historical": "historical_incidents", "kb": "kb_articles", "rca": "rcas"}

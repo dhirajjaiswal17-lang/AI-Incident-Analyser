@@ -1,0 +1,46 @@
+{
+  "summary": "Iteration 5 verified AI deprecated-model auto-upgrade, friendly error messaging on /admin/ai/test, and HTTP 424 on /incidents/{id}/analyze when AI fails. New pytest suite /app/backend/tests/test_iteration5.py (8 tests: 6 pass, 2 skipped due to Gemini quota exhaustion on the owner key — not a code defect). Regression across backend_test.py + test_new_features.py + test_iteration3.py + test_iteration4.py: 136 pass. 3 pre-existing failures in backend_test.py that assume default openai config (env is intentionally configured with gemini per task) — NOT caused by iteration 5. Frontend /admin/ai: dropdown lists exactly [gemini-3-flash-preview, gemini-3.1-pro-preview, gemini-3.5-flash, gemini-2.5-pro (retired for own keys), gemini-2.5-flash (retired for own keys)]; selecting gemini-2.5-flash renders [data-testid=ai-model-deprecated-warning]; Save triggers warning toast 'gemini-2.5-flash is retired for your own API key — switched to gemini-3-flash-preview' and select reverts to gemini-3-flash-preview; Test Connection button returns 'AI reachable'. Frontend /incidents/sn_inc_0001 in demo mode with retired model in Mongo: Analyze click yields the exact friendly toast 'Model gemini-2.5-flash is not available for this API key (gemini). Switch to gemini-3-flash-preview in Admin → AI Configuration.', no [data-testid=rca-section] rendered, page remains fully usable. Final state fully restored: ai=gemini/gemini-3-flash-preview/use_emergent_key false/api_key preserved/rate_limit 10; servicenow.instance_url=https://dev414250.service-now.com.",
+  "backend_issues": {
+    "critical": [
+      {"endpoint": "POST /api/incidents/{sys_id}/analyze", "issue": "With the RESTORED default config (gemini-3-flash-preview + max_tokens=1400) the analyze prompt consistently truncates the model output before the closing JSON brace, causing '_run_llm → No JSON in AI response' and a 424 back to the client on every real (non-quota-exhausted) call. Verified: 3 consecutive analyze calls all failed with `AI error (gemini/gemini-3-flash-preview): No JSON in AI response`; raising max_tokens to 8000 (temporarily via PUT /admin/ai/config) makes analyze succeed with valid JSON. gemini-3-flash-preview is a reasoning model — 1400 tokens is not enough headroom for the analyze system prompt + strict-JSON output. This is a user-visible production defect: any end user in demo mode (and likely in live mode too) will see a 424 with the fallback friendly message 'AI error (gemini/gemini-3-flash-preview): No JSON in AI response' on Analyze. Recommend raising default max_tokens to >= 4000 for reasoning-capable models OR adding a retry-with-larger-max_tokens fallback OR asking the model for JSON via structured output.", "priority": "CRITICAL"}
+    ],
+    "minor": [
+      {"endpoint": "POST /api/admin/ai/test & /analyze", "issue": "The owner's Gemini API key hit a real 429 quota after ~10 test calls in ~5 minutes (message: 'gemini rate limit / quota exceeded for model gemini-3-flash-preview'). This is upstream Google quota, but the app has no client-side back-off / caching for the /admin/ai/test PONG probe — every click of Test Connection burns a quota unit. Consider caching the last test result for N seconds."},
+      {"endpoint": "PUT /api/admin/ai/config", "issue": "DEPRECATED_MODELS dict is defined AFTER put_ai_config uses it (line 543 refs a name defined at line 551). It works only because put_ai_config is imported/called at request-time (Python resolves globals lazily), but the ordering is fragile — move DEPRECATED_MODELS above the route."},
+      {"endpoint": "regression pre-existing (backend_test.py)", "issue": "TestServiceNowConfig.test_get_default_config, test_put_preserves_config, TestAIConfig.test_get_ai_config assert default OpenAI provider — env is intentionally gemini per task requirements. Update those assertions or mark xfail."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration5.py",
+    "/app/test_reports/pytest/iteration5.xml",
+    "/app/test_reports/pytest/iteration5_full.xml"
+  ],
+  "action_items": [
+    "CRITICAL: raise default max_tokens (>=4000) or add fallback so gemini-3-flash-preview reasoning output can fit valid JSON — currently every analyze call fails with 'No JSON in AI response' at max_tokens=1400.",
+    "Move DEPRECATED_MODELS dict above put_ai_config() to avoid forward-reference on server.py:543.",
+    "Fix stale assertions in backend_test.py TestServiceNowConfig / TestAIConfig::test_get_ai_config (expect openai — env is gemini).",
+    "Consider caching /admin/ai/test PONG result briefly to avoid burning Gemini quota on repeated clicks."
+  ],
+  "critical_code_review_comments": [
+    "server.py still 1210 lines — split into routers (>700-line guideline).",
+    "DEPRECATED_MODELS defined after its first use inside put_ai_config — works only due to lazy global resolution; readability & static-analysis smell.",
+    "_friendly_ai_error uses substring matching on str(e) — fragile if litellm changes wording (e.g. 'NotFoundError' vs 'Not found'). Prefer inspecting exception class / status_code fields exposed by emergentintegrations.",
+    "AIConfig.jsx: `if (cfg.model && !models.includes(cfg.model)) models.push(cfg.model);` mutates the shared MODELS[provider] array via reference — repeated renders/provider switches can leak values into MODELS. Copy first: `const models = [...(MODELS[cfg.provider]||[])];`.",
+    "analyze() persists the fallback stub analysis (status='error') with the friendly detail text embedded in the JSON before raising 424 — the record ends up on /admin/analyses & /my-analysis with a fake-looking body ('AI analysis unavailable: …'). Consider omitting or clearly flagging 'error' records in the UI."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration5.py"
+  ],
+  "success_rate": {"backend": "6/6 executed passed (2 skipped upstream quota); 136/140 regression passed (4 pre-existing / rate-limited)", "frontend": "100% of tested flows (AIConfig save+warning+test, IncidentDetail analyze error toast)"},
+  "test_credentials": "Bearer/cookie session_token test_session_admin_001 (admin@test.local), test_session_end_001 (user@test.local) per /app/memory/test_credentials.md",
+  "seed_data_creation": "One analyses record with status='error' (retired-model 424 test) and one status='success' demo-mode analysis were inserted during testing; harmless (both show under /admin/analyses).",
+  "retest_needed": true,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Run tests/test_iteration5.py with `python -m pytest -n 0`. Autouse module-scope fixture restores ai config + SN instance_url at teardown. Tests skip (not fail) when Gemini quota is exhausted — this is real upstream quota, not a bug. If retesting the CRITICAL max_tokens issue, PUT /api/admin/ai/config with max_tokens>=4000 first; keep other fields identical, then Analyze from an end user in demo mode. Owner user_id user_33ad5ed974a9 must not be modified. Restore ai after: {provider:'gemini', model:'gemini-3-flash-preview', temperature:0.2, max_tokens:1400 OR upgraded value if fixed, use_emergent_key:false, api_key:'' (preserves stored key), rate_limit_per_hour:10}.",
+  "rca_of_the_issue": "gemini-3-flash-preview is a reasoning model whose completion budget (max_tokens) covers hidden reasoning tokens too. The analyze system prompt (STRICT JSON with 6 keys + evidence context) needs ~2-3k output tokens; 1400 leaves the JSON truncated before its closing brace, so `re.search(r'\\{[\\s\\S]*\\}', raw)` fails and _run_llm raises 'No JSON in AI response' → 424. Reproduction: PUT ai config with max_tokens=1400 (restored default), demo mode (instance_url=''), POST /api/incidents/sn_inc_0001/analyze as any end user → 424 every time. Mitigation options: (a) bump default max_tokens to 4000-8000 for gemini-3-flash-preview / any *-preview reasoning model; (b) call the model with structured-output JSON schema so partial responses still parse; (c) retry once with a larger cap when the extractor fails."
+}
