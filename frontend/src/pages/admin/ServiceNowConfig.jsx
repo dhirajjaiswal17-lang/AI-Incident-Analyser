@@ -9,6 +9,7 @@ import { toast } from "sonner";
 import { Database, PlugZap, KeyRound } from "lucide-react";
 import { openSNCredentials } from "@/components/ServiceNowCredentialsDialog";
 import { ResolvedSyncPanel } from "@/components/ResolvedSyncPanel";
+import { AutoAnalyzePanel } from "@/components/AutoAnalyzePanel";
 
 export default function ServiceNowConfig() {
   const [cfg, setCfg] = useState(null);
@@ -79,6 +80,7 @@ export default function ServiceNowConfig() {
         </div>
       </div>
       <ResolvedSyncPanel />
+      <AutoAnalyzePanel />
     </div>
   );
 }

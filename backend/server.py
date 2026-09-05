@@ -138,6 +138,7 @@ class AnalysisRecord(BaseModel):
     feedback: Optional[Dict[str, Any]] = None
     posted_to_sn: Optional[Dict[str, Any]] = None
     evidence: Optional[Dict[str, Any]] = None
+    auto: bool = False
     created_at: str = Field(default_factory=lambda: iso(utcnow()))
 
 class ManualAnalysisRequest(BaseModel):
@@ -361,6 +362,11 @@ class SyncConfig(BaseModel):
     lookback_days: int = 7
     sync_user_id: str = ""
     sync_user_email: str = ""
+
+class AutoAnalyzeConfig(BaseModel):
+    enabled: bool = False
+    poll_minutes: int = 15
+    max_per_cycle: int = 10
 
 SYNC_FIELDS = ["sys_id", "number", "short_description", "description", "priority", "cmdb_ci", "category",
                "close_code", "close_notes", "resolved_at", "closed_at", "assignment_group"]
@@ -858,9 +864,12 @@ async def analysis_feedback(analysis_id: str, body: Feedback, request: Request):
     if body.rating not in ("up", "down"):
         raise HTTPException(status_code=400, detail="rating must be 'up' or 'down'")
     fb = {"rating": body.rating, "comment": body.comment.strip()[:1000], "by": user["email"], "ts": iso(utcnow())}
-    res = await db.analyses.update_one({"id": analysis_id, "user_email": user["email"]}, {"$set": {"feedback": fb}})
-    if res.matched_count == 0:
+    res = await db.analyses.find_one({"id": analysis_id}, {"_id": 0, "user_email": 1, "auto": 1})
+    if not res:
         raise HTTPException(status_code=404, detail="Analysis not found")
+    if res.get("user_email") != user["email"] and user.get("role") != "admin" and not res.get("auto"):
+        raise HTTPException(status_code=404, detail="Analysis not found")
+    await db.analyses.update_one({"id": analysis_id}, {"$set": {"feedback": fb}})
     await audit("analysis.feedback", user["email"], {"analysis_id": analysis_id, "rating": body.rating})
     return {"ok": True, "feedback": fb}
 
@@ -926,6 +935,126 @@ async def apply_fix(sys_id: str, body: ApplyFixRequest, request: Request):
                       {"sysparm_fields": "sys_id,number"}, {"work_notes": _applied_fix_note(h)})
     await audit("incident.apply_fix", user["email"], {"incident_sys_id": sys_id, "from": h.get("incident_number") or body.historical_id})
     return {"ok": True, "applied_from": h.get("incident_number") or h.get("short_description", "")}
+
+# ---------- Auto-analyze new P1 incidents ----------
+AUTO_ANALYZE_DEFAULT = {"enabled": False, "poll_minutes": 15, "max_per_cycle": 10, "last_run": None, "last_result": None}
+P1_FIELDS = ["sys_id", "number", "short_description", "description", "priority", "impact", "urgency",
+             "category", "subcategory", "assignment_group", "state", "opened_at", "cmdb_ci"]
+
+async def _auto_cfg() -> Dict[str, Any]:
+    return await get_config("auto_analyze", dict(AUTO_ANALYZE_DEFAULT))
+
+async def _fetch_open_p1s(cfg: ServiceNowConfig, auth, limit: int) -> List[Dict[str, Any]]:
+    data = await _sn_request(cfg, auth, "GET", f"/api/now/table/{cfg.table}",
+                             {"sysparm_query": "active=true^priority=1^ORDERBYDESCopened_at",
+                              "sysparm_fields": ",".join(P1_FIELDS), "sysparm_limit": limit,
+                              "sysparm_display_value": "true"})
+    return data.get("result", [])
+
+async def _auto_analyze_incident(row: Dict[str, Any], ai_cfg: AIConfig, actor: str) -> str:
+    ctx = await _build_context(row)
+    summary = _incident_summary(row)
+    status = "success"
+    try:
+        parsed = await _ai_analysis(_analysis_prompt(summary, ctx), ai_cfg)
+    except Exception as e:
+        logger.exception("Auto analyze failed")
+        status, parsed = "error", _fallback_analysis(_friendly_ai_error(e, ai_cfg))
+    record = AnalysisRecord(
+        incident_number=summary["number"] or _dv(row.get("sys_id")), incident_sys_id=_dv(row.get("sys_id")),
+        incident_short_description=summary["short_description"], application=summary["application"],
+        user_email=actor, model=f"{ai_cfg.provider}/{ai_cfg.model}",
+        confidence=str(parsed.get("confidence", "Medium")), status=status, result=parsed,
+        evidence=_evidence(ctx), auto=True,
+    )
+    await db.analyses.insert_one(record.model_dump())
+    return status
+
+async def _auto_analyze_new(sc: Dict[str, Any], cfg: ServiceNowConfig, result: Dict[str, Any]) -> None:
+    if not cfg.instance_url:
+        raise HTTPException(status_code=400, detail="ServiceNow not configured")
+    sync = await _sync_cfg()
+    if not sync.get("sync_user_id"):
+        raise HTTPException(status_code=400, detail="No service account — configure the Resolved Incident Sync first (it binds the ServiceNow account used by automation)")
+    auth = await _user_sn_auth({"user_id": sync["sync_user_id"]})
+    actor = sync.get("sync_user_email") or "auto-analyzer"
+    cap = max(1, min(int(sc.get("max_per_cycle") or 10), 50))
+    rows = await _fetch_open_p1s(cfg, auth, cap * 4)
+    result["fetched"] = len(rows)
+    ai_cfg = await _ai_cfg()
+    analyzed = errors = 0
+    for row in rows:
+        sys_id = _dv(row.get("sys_id"))
+        if not sys_id:
+            continue
+        if await db.analyses.find_one({"incident_sys_id": sys_id, "auto": True}, {"_id": 1}):
+            continue
+        if await _auto_analyze_incident(row, ai_cfg, actor) == "success":
+            analyzed += 1
+        else:
+            errors += 1
+        if analyzed >= cap:
+            break
+    result["analyzed"], result["errors"], result["ok"] = analyzed, errors, True
+
+async def _run_auto_analyze(trigger: str) -> Dict[str, Any]:
+    sc = await _auto_cfg()
+    result: Dict[str, Any] = {"ts": iso(utcnow()), "trigger": trigger, "ok": False, "fetched": 0, "analyzed": 0, "errors": 0}
+    try:
+        await _auto_analyze_new(sc, await _sn_cfg(), result)
+    except HTTPException as e:
+        result["error"] = e.detail
+    except Exception as e:
+        result["error"] = f"{type(e).__name__}: {str(e)[:160]}"
+    await db.configs.update_one({"kind": "auto_analyze"}, {"$set": {"last_run": result["ts"], "last_result": result}}, upsert=True)
+    await audit("incident.auto_analyze", "system", {k: result.get(k) for k in ("trigger", "ok", "fetched", "analyzed", "errors", "error")})
+    return result
+
+@api.get("/admin/auto-analyze")
+async def get_auto_analyze(_: dict = Depends(require_admin)):
+    return await _auto_cfg()
+
+@api.put("/admin/auto-analyze")
+async def put_auto_analyze(body: AutoAnalyzeConfig, admin=Depends(require_admin)):
+    cur = await _auto_cfg()
+    payload = body.model_dump()
+    payload["poll_minutes"] = max(5, min(payload["poll_minutes"], 180))
+    payload["max_per_cycle"] = max(1, min(payload["max_per_cycle"], 50))
+    if payload["enabled"] and not (await _sync_cfg()).get("sync_user_id"):
+        raise HTTPException(status_code=428, detail="Configure the Resolved Incident Sync first — auto-analyze uses that ServiceNow service account")
+    await db.configs.update_one({"kind": "auto_analyze"}, {"$set": {**payload, "kind": "auto_analyze"}}, upsert=True)
+    await audit("config.auto_analyze.update", admin["email"], {k: payload[k] for k in ("enabled", "poll_minutes", "max_per_cycle")})
+    return {**cur, **payload}
+
+@api.post("/admin/auto-analyze/run")
+async def run_auto_analyze(_: dict = Depends(require_admin)):
+    return await _run_auto_analyze("manual")
+
+@api.get("/incidents/{sys_id}/auto-analysis")
+async def get_auto_analysis(sys_id: str, request: Request):
+    await require_user(request)
+    if not re.match(r"^[a-zA-Z0-9_\-]+$", sys_id):
+        raise HTTPException(status_code=400, detail="Invalid incident id")
+    a = await db.analyses.find_one({"incident_sys_id": sys_id, "auto": True, "status": "success"}, {"_id": 0}, sort=[("created_at", -1)])
+    if not a:
+        return {"exists": False}
+    return {"exists": True, "analysis": a["result"], "analysis_id": a["id"], "evidence": a.get("evidence"),
+            "model": a.get("model"), "created_at": a["created_at"]}
+
+async def _auto_analyze_scheduler():
+    while True:
+        try:
+            sc = await _auto_cfg()
+            if sc.get("enabled"):
+                last = sc.get("last_run")
+                due = True
+                if last:
+                    due = (utcnow() - datetime.fromisoformat(last)).total_seconds() >= int(sc.get("poll_minutes", 15)) * 60
+                if due:
+                    await _run_auto_analyze("scheduled")
+        except Exception as e:
+            logger.warning(f"auto-analyze scheduler error: {e}")
+        await asyncio.sleep(60)
 
 # ---------- Feedback analytics ----------
 def _rate(up: int, total: int) -> Optional[int]:
@@ -1272,6 +1401,7 @@ async def seed():
     if await db.applications.count_documents({}) == 0:
         await db.applications.insert_many([{**d} for d in DEMO_APPS])
     asyncio.create_task(_sync_scheduler())
+    asyncio.create_task(_auto_analyze_scheduler())
     logger.info("Seed check complete")
 
 @app.on_event("shutdown")

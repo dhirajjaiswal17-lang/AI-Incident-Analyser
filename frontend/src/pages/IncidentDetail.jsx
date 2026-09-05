@@ -1,12 +1,12 @@
 import React from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
-import { ArrowLeft, Sparkles, KeyRound } from "lucide-react";
+import { ArrowLeft, Sparkles, KeyRound, Zap } from "lucide-react";
 import { SimilarIncidents } from "@/components/SimilarIncidents";
 import { openSNCredentials } from "@/components/ServiceNowCredentialsDialog";
 import { IncidentHeader, IncidentSidebar } from "@/components/incident/IncidentHeader";
 import { AnalysisResult } from "@/components/incident/AnalysisResult";
-import { useIncident, useAnalysisQuota, useDemoMode, useAnalyze } from "@/hooks/useIncident";
+import { useIncident, useAnalysisQuota, useDemoMode, useAnalyze, useAutoAnalysis } from "@/hooks/useIncident";
 
 export default function IncidentDetail() {
   const { sysId } = useParams();
@@ -15,6 +15,7 @@ export default function IncidentDetail() {
   const { quota, loadQuota, exhausted } = useAnalysisQuota();
   const demo = useDemoMode();
   const { analyzing, result, analyze } = useAnalyze(sysId, loadQuota);
+  const auto = useAutoAnalysis(sysId);
 
   if (loading) return <div className="p-10 text-slate-400">Loading incident…</div>;
   if (needCreds) return <NeedsCredentials />;
@@ -29,7 +30,16 @@ export default function IncidentDetail() {
       <div className="mt-8 grid grid-cols-1 lg:grid-cols-3 gap-6">
         <IncidentSidebar inc={inc} />
         <div className="lg:col-span-2">
-          {!result && !analyzing && <PreAnalysis sysId={sysId} demo={demo} />}
+          {!result && !analyzing && auto && (
+            <div className="space-y-3" data-testid="auto-analysis-view">
+              <div className="flex items-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/5 px-4 py-2.5 text-xs text-amber-200" data-testid="auto-analysis-banner">
+                <Zap className="h-4 w-4 text-amber-400 shrink-0" />
+                <span>Auto-analyzed for the on-call {auto.created_at ? `· ${auto.created_at.slice(0, 16).replace("T", " ")} UTC` : ""}. Re-run any time with <b>Run AI Analysis</b> above.</span>
+              </div>
+              <AnalysisResult analysis={auto.analysis} analysisId={auto.analysis_id} evidence={auto.evidence} demo={demo} />
+            </div>
+          )}
+          {!result && !analyzing && !auto && <PreAnalysis sysId={sysId} demo={demo} />}
           {analyzing && <AnalyzingState />}
           {result && <AnalysisResult analysis={result.analysis} analysisId={result.analysisId} evidence={result.evidence} demo={demo} />}
         </div>

@@ -30,8 +30,20 @@ export function useIncident(sysId) {
   return { inc, loading, needCreds };
 }
 
-export function useAnalysisQuota() {
-  const [quota, setQuota] = useState(null);
+export function useAutoAnalysis(sysId) {
+  const [auto, setAuto] = useState(null);
+  useEffect(() => {
+    let active = true;
+    setAuto(null);
+    api.get(`/incidents/${sysId}/auto-analysis`)
+      .then(r => { if (active && r.data?.exists) setAuto(r.data); })
+      .catch(() => {});
+    return () => { active = false; };
+  }, [sysId]);
+  return auto;
+}
+
+export function useAnalysisQuota() {  const [quota, setQuota] = useState(null);
   const loadQuota = useCallback(() => {
     api.get("/analyses/quota").then(r => setQuota(r.data)).catch(e => console.error("Quota fetch failed:", e));
   }, []);
