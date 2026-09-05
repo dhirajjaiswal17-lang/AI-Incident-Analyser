@@ -12,6 +12,7 @@ import { useAnalysisQuota } from "@/hooks/useIncident";
 export default function ManualAnalysis() {
   const [shortDescription, setShortDescription] = useState("");
   const [description, setDescription] = useState("");
+  const [logs, setLogs] = useState("");
   const [analyzing, setAnalyzing] = useState(false);
   const [result, setResult] = useState(null);
   const { quota, loadQuota, exhausted } = useAnalysisQuota();
@@ -26,6 +27,7 @@ export default function ManualAnalysis() {
       const { data } = await api.post("/analyses/manual", {
         short_description: shortDescription.trim(),
         description: description.trim(),
+        logs: logs.trim(),
       });
       setResult({ analysis: data.analysis, analysisId: data.analysis_id, evidence: data.evidence || null });
       toast.success("AI analysis complete");
@@ -77,6 +79,22 @@ export default function ManualAnalysis() {
               className="bg-slate-900 border-slate-700 text-slate-100 resize-y"
               disabled={analyzing}
             />
+          </div>
+          <div className="mt-4 space-y-2">
+            <Label htmlFor="logs" className="text-slate-300">
+              Error Logs / Stack Trace <span className="text-slate-500 font-normal">(optional)</span>
+            </Label>
+            <Textarea
+              id="logs"
+              data-testid="manual-logs"
+              placeholder="Paste relevant error logs, exceptions or stack traces here — the AI will ground the root cause in these lines."
+              value={logs}
+              onChange={(e) => setLogs(e.target.value)}
+              rows={7}
+              className="bg-slate-900 border-slate-700 text-slate-100 resize-y font-mono text-xs"
+              disabled={analyzing}
+            />
+            <p className="text-[11px] text-slate-500">Up to ~6,000 characters are analyzed.</p>
           </div>
           {exhausted && (
             <p className="mt-3 text-xs text-amber-300" data-testid="manual-quota-exhausted">

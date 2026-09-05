@@ -59,6 +59,8 @@ Build a production-ready AI Incident Analyzer web app that integrates ServiceNow
 
 - 2026-09-06: v1.5 — Manual "Analyze My Issue" feature. New sidebar page `/analyze` (all users) lets end users paste a Short Description + Detailed Description and get AI analysis without ServiceNow. New endpoint `POST /api/analyses/manual` (ManualAnalysisRequest) reuses `_build_context` (RAG over historical/KB/RCA), `_analysis_prompt`, `_ai_analysis`; saves an AnalysisRecord (incident_sys_id="manual", ref MANUAL-XXXX) so it appears in My Analysis and supports thumbs up/down feedback. Rate limit enforced. `AnalysisResult` gained `hidePost` prop (no Post-to-ServiceNow for manual). Verified: endpoint returns full structured analysis + evidence; records saved to /analyses/mine. NOTE: verification limited by owner's Gemini free-tier daily quota (20 req/day) — same 424 friendly-error path as ServiceNow analyze; switch to Universal/paid key for uninterrupted use.
 
+- 2026-09-06: v1.5.1 — "Attach Logs" on Analyze My Issue. Manual form gained an optional monospace **Error Logs / Stack Trace** textarea (paste-only, manual page only). `ManualAnalysisRequest.logs` truncated to 6000 chars; `_analysis_prompt` gained optional `logs` param adding a dedicated "### ERROR LOGS / STACK TRACE" section; logs also folded into `_build_context` tokenization to sharpen RAG matches; ANALYSIS_SYSTEM_PROMPT instructs the model to quote the most telling log lines. Verified field renders + backend accepts logs (live AI run still blocked by owner's Gemini free-tier daily quota → 424).
+
 ## Deferred / Backlog
 - P2: KB upload de-duplication by source_file; stream size check before buffering
 - P2: Vector-based semantic RAG (embeddings)

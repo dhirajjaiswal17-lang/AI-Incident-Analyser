@@ -143,6 +143,7 @@ class AnalysisRecord(BaseModel):
 class ManualAnalysisRequest(BaseModel):
     short_description: str
     description: str = ""
+    logs: str = ""
 
 # ---------- Auth ----------
 async def audit(action: str, user_email: str, meta: Optional[Dict[str, Any]] = None):
@@ -698,7 +699,9 @@ ANALYSIS_SYSTEM_PROMPT = (
     "(e.g. 'per INC001' or 'per KB: <title>'). Prefer proven internal resolutions over generic advice; only fall back to "
     "generic guidance when nothing internal matches, and say so. "
     "If PAST ANALYST FEEDBACK is provided, treat 'not helpful' items as corrections: avoid repeating those "
-    "conclusions and incorporate the analyst comments."
+    "conclusions and incorporate the analyst comments. "
+    "If ERROR LOGS / STACK TRACE are provided, ground the root cause in the specific errors, exceptions or "
+    "stack frames — quote the most telling log line(s) verbatim in confidence_explanation or likely_root_cause."
 )
 SUMMARY_FIELDS = ["number", "short_description", "description", "category", "subcategory", "priority", "impact", "urgency", "assignment_group", "state"]
 
@@ -710,15 +713,18 @@ def _incident_summary(inc: Dict[str, Any]) -> Dict[str, str]:
 def _strip_scores(items: List[Dict[str, Any]]) -> str:
     return json.dumps([{k: v for k, v in i.items() if k != "_score"} for i in items], indent=2) or "None"
 
-def _analysis_prompt(summary: Dict[str, str], ctx: Dict[str, Any]) -> str:
-    return "\n".join([
-        "### CURRENT INCIDENT", json.dumps(summary, indent=2),
+def _analysis_prompt(summary: Dict[str, str], ctx: Dict[str, Any], logs: str = "") -> str:
+    parts = ["### CURRENT INCIDENT", json.dumps(summary, indent=2)]
+    if logs:
+        parts += ["\n### ERROR LOGS / STACK TRACE (provided by user)", logs]
+    parts += [
         "\n### INTERNAL HISTORICAL INCIDENTS (top matches)", _strip_scores(ctx["historical"]),
         "\n### INTERNAL KNOWLEDGE BASE (top matches)", _strip_scores(ctx["kb"]),
         "\n### INTERNAL RCA REPOSITORY (top matches)", _strip_scores(ctx["rcas"]),
         "\n### PAST ANALYST FEEDBACK ON SIMILAR ANALYSES", json.dumps(ctx["feedback"], indent=2) if ctx["feedback"] else "None",
         "\nReturn STRICT JSON only. No prose outside JSON.",
-    ])
+    ]
+    return "\n".join(parts)
 
 def _parse_ai_json(raw: str) -> Dict[str, Any]:
     m = re.search(r"\{[\s\S]*\}", raw)
@@ -790,13 +796,14 @@ async def analyze_manual(body: ManualAnalysisRequest, request: Request):
     ai_cfg = await _ai_cfg()
     await _check_rate_limit(user, ai_cfg)
     desc = body.description.strip()
-    ctx = await _build_context({"short_description": short, "description": desc})
+    logs = body.logs.strip()[:6000]
+    ctx = await _build_context({"short_description": short, "description": f"{desc}\n{logs}".strip()})
     ref = f"MANUAL-{uuid.uuid4().hex[:8].upper()}"
     summary = {"number": ref, "short_description": short, "description": desc, "application": ""}
 
     status, ai_error = "success", ""
     try:
-        parsed = await _ai_analysis(_analysis_prompt(summary, ctx), ai_cfg)
+        parsed = await _ai_analysis(_analysis_prompt(summary, ctx, logs=logs), ai_cfg)
     except Exception as e:
         logger.exception("Manual AI analyze failed")
         status, ai_error = "error", _friendly_ai_error(e, ai_cfg)
