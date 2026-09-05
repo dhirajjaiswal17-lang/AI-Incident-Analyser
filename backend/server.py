@@ -145,6 +145,9 @@ class ManualAnalysisRequest(BaseModel):
     description: str = ""
     logs: str = ""
 
+class ApplyFixRequest(BaseModel):
+    historical_id: str
+
 # ---------- Auth ----------
 async def audit(action: str, user_email: str, meta: Optional[Dict[str, Any]] = None):
     await db.audit_logs.insert_one({
@@ -588,8 +591,9 @@ async def _run_llm(system_msg: str, user_msg: str, cfg: AIConfig, max_tokens: Op
     api_key = os.environ["EMERGENT_LLM_KEY"] if cfg.use_emergent_key or not cfg.api_key else cfg.api_key
     session_id = new_id("chat")
     chat = LlmChat(api_key=api_key, session_id=session_id, system_message=system_msg)
+    temp = 1.0 if (cfg.provider == "openai" and cfg.model.startswith("gpt-5")) else cfg.temperature
     chat = chat.with_model(cfg.provider, cfg.model).with_params(
-        temperature=cfg.temperature, max_tokens=max_tokens or max(cfg.max_tokens, MIN_OUTPUT_TOKENS),
+        temperature=temp, max_tokens=max_tokens or max(cfg.max_tokens, MIN_OUTPUT_TOKENS),
     )
     resp = await chat.send_message(UserMessage(text=user_msg))
     if resp is None or (isinstance(resp, str) and not resp.strip()):
@@ -895,6 +899,33 @@ async def post_to_servicenow(analysis_id: str, request: Request):
     await db.analyses.update_one({"id": analysis_id}, {"$set": {"posted_to_sn": posted}})
     await audit("analysis.post_to_servicenow", user["email"], {"analysis_id": analysis_id, "incident": a.get("incident_number")})
     return {"ok": True, "posted_to_sn": posted, "incident_number": a.get("incident_number")}
+
+def _applied_fix_note(h: Dict[str, Any]) -> str:
+    lines = [f"[AI Incident Analyzer] Proven resolution applied from similar incident {h.get('incident_number', '')}".rstrip(),
+             f"Original issue: {h.get('short_description', '')}"]
+    if h.get("root_cause"):
+        lines += ["", f"Root cause: {h['root_cause']}"]
+    lines += ["", f"Resolution: {h.get('resolution', '')}"]
+    return "\n".join(lines)
+
+@api.post("/incidents/{sys_id}/apply-fix")
+async def apply_fix(sys_id: str, body: ApplyFixRequest, request: Request):
+    user = await require_user(request)
+    if not re.match(r"^[a-zA-Z0-9_\-]+$", sys_id):
+        raise HTTPException(status_code=400, detail="Invalid incident id")
+    h = await db.historical_incidents.find_one({"id": body.historical_id}, {"_id": 0})
+    if not h:
+        raise HTTPException(status_code=404, detail="Similar incident not found")
+    if not (h.get("resolution") or "").strip():
+        raise HTTPException(status_code=400, detail="This incident has no recorded resolution to apply")
+    cfg = await _sn_cfg()
+    if not cfg.instance_url:
+        raise HTTPException(status_code=400, detail="Demo mode — connect ServiceNow to apply a fix")
+    auth = await _user_sn_auth(user)
+    await _sn_request(cfg, auth, "PATCH", f"/api/now/table/{cfg.table}/{sys_id}",
+                      {"sysparm_fields": "sys_id,number"}, {"work_notes": _applied_fix_note(h)})
+    await audit("incident.apply_fix", user["email"], {"incident_sys_id": sys_id, "from": h.get("incident_number") or body.historical_id})
+    return {"ok": True, "applied_from": h.get("incident_number") or h.get("short_description", "")}
 
 # ---------- Feedback analytics ----------
 def _rate(up: int, total: int) -> Optional[int]:

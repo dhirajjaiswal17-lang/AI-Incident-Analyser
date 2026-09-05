@@ -1,6 +1,8 @@
-import React from "react";
+import React, { useState } from "react";
 import { Badge } from "@/components/ui/badge";
-import { ShieldCheck, AlertTriangle, Wrench, GitBranch, TrendingUp } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { ShieldCheck, AlertTriangle, Wrench, GitBranch, TrendingUp, Copy, Check } from "lucide-react";
+import { toast } from "sonner";
 import { AnalysisFeedback } from "@/components/AnalysisFeedback";
 import { PostToServiceNow } from "@/components/PostToServiceNow";
 import { LinkedEvidence } from "@/components/LinkedEvidence";
@@ -21,6 +23,10 @@ const SECTIONS = [
 export function AnalysisResult({ analysis, analysisId, evidence, demo, hidePost = false }) {
   return (
     <div className="space-y-5">
+      <div className="flex items-center justify-between gap-3">
+        <div className="text-xs uppercase tracking-[0.2em] text-slate-400">AI Analysis</div>
+        <CopyAnalysisButton analysis={analysis} />
+      </div>
       {SECTIONS.map(s => (
         <Section key={s.key} icon={<s.icon className="h-4 w-4" />} title={s.title} testid={s.testid}>
           <p className="text-sm text-slate-200 leading-relaxed whitespace-pre-wrap">{analysis[s.key]}</p>
@@ -40,8 +46,32 @@ export function AnalysisResult({ analysis, analysisId, evidence, demo, hidePost 
   );
 }
 
-function ConfidenceCard({ analysis }) {
+function CopyAnalysisButton({ analysis }) {
+  const [copied, setCopied] = useState(false);
+  const copy = async () => {
+    const text = [
+      ...SECTIONS.map(s => `${s.title}:\n${analysis[s.key] || "—"}`),
+      `Confidence: ${analysis.confidence || "Medium"}\n${analysis.confidence_explanation || ""}`.trim(),
+    ].join("\n\n");
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      toast.success("Analysis copied to clipboard");
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      toast.error("Could not copy — your browser blocked clipboard access");
+    }
+  };
   return (
+    <Button size="sm" variant="outline" onClick={copy} data-testid="copy-analysis-btn"
+            className="border-slate-700 bg-slate-900 text-slate-200 hover:bg-slate-800 hover:border-cyan-500/50">
+      {copied ? <Check className="h-4 w-4 mr-1.5 text-emerald-400" /> : <Copy className="h-4 w-4 mr-1.5" />}
+      {copied ? "Copied" : "Copy analysis"}
+    </Button>
+  );
+}
+
+function ConfidenceCard({ analysis }) {  return (
     <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-5 flex items-start gap-4" data-testid="confidence-section">
       <ShieldCheck className="h-5 w-5 text-cyan-400 mt-0.5" />
       <div className="flex-1">

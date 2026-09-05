@@ -29,7 +29,7 @@ export default function IncidentDetail() {
       <div className="mt-8 grid grid-cols-1 lg:grid-cols-3 gap-6">
         <IncidentSidebar inc={inc} />
         <div className="lg:col-span-2">
-          {!result && !analyzing && <PreAnalysis sysId={sysId} />}
+          {!result && !analyzing && <PreAnalysis sysId={sysId} demo={demo} />}
           {analyzing && <AnalyzingState />}
           {result && <AnalysisResult analysis={result.analysis} analysisId={result.analysisId} evidence={result.evidence} demo={demo} />}
         </div>
@@ -49,10 +49,10 @@ function NeedsCredentials() {
   );
 }
 
-function PreAnalysis({ sysId }) {
+function PreAnalysis({ sysId, demo }) {
   return (
     <div className="space-y-5">
-      <SimilarIncidents sysId={sysId} />
+      <SimilarIncidents sysId={sysId} demo={demo} />
       <div className="rounded-2xl border border-dashed border-slate-800 bg-slate-950/40 p-8 text-center">
         <Sparkles className="h-8 w-8 text-cyan-400 mx-auto" />
         <h3 className="mt-3 font-semibold text-lg">Run AI Analysis</h3>

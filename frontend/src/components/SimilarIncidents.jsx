@@ -1,17 +1,20 @@
 import React, { useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
-import { History, BookOpen, ClipboardList, Radar, ChevronRight } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { History, BookOpen, ClipboardList, Radar, ChevronRight, Wand2, CheckCircle2 } from "lucide-react";
 import { EvidenceDialog } from "@/components/LinkedEvidence";
 import { toast } from "sonner";
 
-export function SimilarIncidents({ sysId }) {
+export function SimilarIncidents({ sysId, demo }) {
   const [data, setData] = useState(null);
   const [error, setError] = useState(false);
   const [open, setOpen] = useState(null);
+  const [applying, setApplying] = useState(null);
+  const [applied, setApplied] = useState({});
 
   useEffect(() => {
-    setData(null); setError(false);
+    setData(null); setError(false); setApplied({});
     api.get(`/incidents/${sysId}/similar`).then(r => setData(r.data)).catch(e => {
       setError(true);
       if (e?.response?.status !== 428) console.error("Similar incidents lookup failed:", e);
@@ -21,6 +24,17 @@ export function SimilarIncidents({ sysId }) {
   const show = async (kind, id) => {
     try { const { data: doc } = await api.get(`/evidence/${kind}/${id}`); setOpen({ kind, doc }); }
     catch (e) { toast.error(e?.response?.data?.detail || "Could not load record"); }
+  };
+
+  const applyFix = async (h) => {
+    setApplying(h.id);
+    try {
+      const { data: res } = await api.post(`/incidents/${sysId}/apply-fix`, { historical_id: h.id });
+      setApplied(prev => ({ ...prev, [h.id]: true }));
+      toast.success(`Resolution from ${res.applied_from || h.number} posted as a work note`);
+    } catch (e) {
+      if (e?.response?.status !== 428) toast.error(e?.response?.data?.detail || "Could not apply fix", { duration: 8000 });
+    } finally { setApplying(null); }
   };
 
   const total = data ? data.historical.length + data.kb.length + data.rca.length : 0;
@@ -41,11 +55,10 @@ export function SimilarIncidents({ sysId }) {
       {data && data.historical.length > 0 && (
         <div className="divide-y divide-slate-800/80" data-testid="similar-historical">
           {data.historical.map(h => (
-            <button key={h.id} onClick={() => show("historical", h.id)} data-testid={`similar-hist-${h.id}`}
-                    className="w-full text-left px-5 py-3.5 hover:bg-slate-900/60 transition-colors group">
+            <div key={h.id} data-testid={`similar-hist-${h.id}`} className="px-5 py-3.5 hover:bg-slate-900/60 transition-colors group">
               <div className="flex items-start gap-3">
                 <History className="h-4 w-4 text-cyan-400 mt-0.5 shrink-0" />
-                <div className="min-w-0 flex-1">
+                <button onClick={() => show("historical", h.id)} data-testid={`similar-hist-open-${h.id}`} className="min-w-0 flex-1 text-left">
                   <div className="flex items-center gap-2 flex-wrap">
                     <span className="font-mono text-xs text-cyan-300">{h.number}</span>
                     <span className="text-sm text-slate-100 truncate">{h.title}</span>
@@ -57,10 +70,28 @@ export function SimilarIncidents({ sysId }) {
                   ) : h.root_cause ? (
                     <div className="mt-1.5 text-xs text-slate-400 line-clamp-2"><span className="uppercase tracking-wider text-[10px] mr-1.5">Cause</span>{h.root_cause}</div>
                   ) : null}
-                </div>
+                </button>
                 <ChevronRight className="h-4 w-4 text-slate-600 group-hover:text-cyan-400 shrink-0 mt-0.5" />
               </div>
-            </button>
+              {h.resolution && (
+                <div className="mt-2.5 pl-7 flex items-center gap-3">
+                  {applied[h.id] ? (
+                    <span className="inline-flex items-center gap-1.5 text-xs text-emerald-300" data-testid={`apply-fix-done-${h.id}`}>
+                      <CheckCircle2 className="h-3.5 w-3.5" /> Resolution posted to work note
+                    </span>
+                  ) : (
+                    <>
+                      <Button size="sm" variant="outline" onClick={() => applyFix(h)} disabled={demo || applying === h.id}
+                              data-testid={`apply-fix-btn-${h.id}`}
+                              className="h-7 border-slate-700 bg-slate-900 text-slate-200 hover:bg-slate-800 hover:border-cyan-500/50 text-xs">
+                        <Wand2 className="h-3.5 w-3.5 mr-1.5 text-cyan-400" /> {applying === h.id ? "Applying…" : "Apply fix to ServiceNow"}
+                      </Button>
+                      {demo && <span className="text-[11px] text-slate-500" data-testid={`apply-fix-demo-${h.id}`}>Connect ServiceNow to apply</span>}
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
           ))}
         </div>
       )}
