@@ -46,6 +46,11 @@ Build a production-ready AI Incident Analyzer web app that integrates ServiceNow
   - RAG: token stemming, weighted title/application match, list caps 20000; prompt instructs verbatim quoting of matched internal resolutions with source citation.
   - CRUD DELETE now 404s on unknown id; admin tables cap render at 200 rows with count footer.
 
+- 2026-09-05: v1.3 — Resolved-incident sync + Linked Evidence (testing agent: 21/21 new + 111/111 regression, frontend pass).
+  - `GET/PUT /api/admin/servicenow/sync`, `POST /api/admin/servicenow/sync/run`; asyncio scheduler runs daily at `hour_utc` with the binding admin's SN creds; maps close_notes→resolution, close_code→root_cause, tag `source:servicenow-sync`. Live: 23 resolved incidents synced from dev414250; enabled nightly 02:00 UTC, 365-day lookback, bound to dhirajjaiswal17@gmail.com.
+  - Analyze response + record now carry `evidence` (historical/kb/rca ids+titles+scores); `GET /api/evidence/{kind}/{id}` read-only for any user. LinkedEvidence panel on incident detail and expandable rows in Analysis History / My Analysis with drill-down dialog.
+  - Owner dhirajjaiswal17@gmail.com promoted to admin (ADMIN_EMAILS in backend/.env).
+
 ## Deferred / Backlog
 - P2: KB upload de-duplication by source_file; stream size check before buffering
 - P2: Vector-based semantic RAG (embeddings)
@@ -53,6 +58,6 @@ Build a production-ready AI Incident Analyzer web app that integrates ServiceNow
 - P3: Real-time updates via WebSockets/SSE
 
 ## Next Actions
-- Auto-attach matching RCA/KB links inside the analysis for one-click drill down
-- Scheduled sync of resolved incidents from ServiceNow into Historical Incidents (closed tickets → training data)
-- Export analytics as CSV
+- Export analytics / analysis history as CSV
+- Similar-incidents panel before Analyze
+- Migrate on_event → lifespan

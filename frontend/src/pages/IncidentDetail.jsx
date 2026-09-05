@@ -7,6 +7,7 @@ import { ArrowLeft, Sparkles, ShieldCheck, AlertTriangle, Wrench, GitBranch, Tre
 import { toast } from "sonner";
 import { AnalysisFeedback } from "@/components/AnalysisFeedback";
 import { PostToServiceNow } from "@/components/PostToServiceNow";
+import { LinkedEvidence } from "@/components/LinkedEvidence";
 import { openSNCredentials, SN_CREDS_SAVED } from "@/components/ServiceNowCredentialsDialog";
 
 function val(v) {
@@ -29,6 +30,7 @@ export default function IncidentDetail() {
   const [analyzing, setAnalyzing] = useState(false);
   const [analysis, setAnalysis] = useState(null);
   const [analysisId, setAnalysisId] = useState(null);
+  const [evidence, setEvidence] = useState(null);
   const [quota, setQuota] = useState(null);
   const [needCreds, setNeedCreds] = useState(false);
   const [demo, setDemo] = useState(true);
@@ -58,11 +60,12 @@ export default function IncidentDetail() {
   }, [sysId]);
 
   const analyze = async () => {
-    setAnalyzing(true); setAnalysis(null); setAnalysisId(null);
+    setAnalyzing(true); setAnalysis(null); setAnalysisId(null); setEvidence(null);
     try {
       const { data } = await api.post(`/incidents/${sysId}/analyze`);
       setAnalysis(data.analysis);
       setAnalysisId(data.analysis_id);
+      setEvidence(data.evidence || null);
       toast.success("AI analysis complete");
     } catch (e) {
       if (e?.response?.status === 429) toast.error(e.response.data.detail, { duration: 8000 });
@@ -188,6 +191,7 @@ export default function IncidentDetail() {
                   <p className="mt-2 text-sm text-slate-300">{analysis.confidence_explanation}</p>
                 </div>
               </div>
+              {analysisId && <LinkedEvidence evidence={evidence} />}
               {analysisId && (
                 <div className="flex items-center justify-between gap-4 flex-wrap rounded-xl border border-slate-800 bg-slate-950/70 px-5 py-4" data-testid="analysis-actions">
                   <div className="text-xs text-slate-400">Share this analysis with the ticket owner</div>

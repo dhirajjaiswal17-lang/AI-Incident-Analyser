@@ -137,6 +137,7 @@ class AnalysisRecord(BaseModel):
     result: Dict[str, Any]
     feedback: Optional[Dict[str, Any]] = None
     posted_to_sn: Optional[Dict[str, Any]] = None
+    evidence: Optional[Dict[str, Any]] = None
     created_at: str = Field(default_factory=lambda: iso(utcnow()))
 
 # ---------- Auth ----------
@@ -344,6 +345,104 @@ async def my_sn_delete(request: Request):
     await db.sn_credentials.delete_one({"user_id": user["user_id"]})
     await audit("servicenow.credentials.delete", user["email"])
     return {"ok": True}
+
+# ---------- Resolved-incident sync (nightly) ----------
+class SyncConfig(BaseModel):
+    enabled: bool = False
+    hour_utc: int = 2
+    lookback_days: int = 7
+    sync_user_id: str = ""
+    sync_user_email: str = ""
+
+SYNC_FIELDS = ["sys_id", "number", "short_description", "description", "priority", "cmdb_ci", "category",
+               "close_code", "close_notes", "resolved_at", "closed_at", "assignment_group"]
+
+async def _sync_cfg() -> Dict[str, Any]:
+    return await get_config("sn_sync", {**SyncConfig().model_dump(), "last_run": None, "last_result": None})
+
+def _dv(x) -> str:
+    if isinstance(x, dict): return str(x.get("display_value") or "")
+    return str(x or "")
+
+async def _run_resolved_sync(trigger: str) -> Dict[str, Any]:
+    sc = await _sync_cfg()
+    cfg = await _sn_cfg()
+    result: Dict[str, Any] = {"ts": iso(utcnow()), "trigger": trigger, "ok": False, "fetched": 0, "inserted": 0, "updated": 0}
+    try:
+        if not cfg.instance_url: raise HTTPException(status_code=400, detail="ServiceNow not configured")
+        if not sc.get("sync_user_id"): raise HTTPException(status_code=400, detail="No sync account — save the sync settings while logged in with your ServiceNow credentials")
+        auth = await _user_sn_auth({"user_id": sc["sync_user_id"]})
+        days = max(1, min(int(sc.get("lookback_days") or 7), 365))
+        q = f"stateIN6,7^resolved_at>=javascript:gs.daysAgoStart({days})^ORclosed_at>=javascript:gs.daysAgoStart({days})"
+        rows: List[Dict[str, Any]] = []
+        offset = 0
+        while offset < 5000:
+            data = await _sn_request(cfg, auth, "GET", f"/api/now/table/{cfg.table}",
+                                     {"sysparm_query": q, "sysparm_fields": ",".join(SYNC_FIELDS), "sysparm_limit": 200,
+                                      "sysparm_offset": offset, "sysparm_display_value": "true"})
+            page = data.get("result", [])
+            rows.extend(page)
+            if len(page) < 200: break
+            offset += 200
+        mapped = []
+        for r in rows:
+            if not _dv(r.get("number")): continue
+            mapped.append({
+                "number": _dv(r.get("number")), "short_description": _dv(r.get("short_description")) or "(no title)",
+                "description": _dv(r.get("description"))[:4000], "application": _dv(r.get("cmdb_ci")),
+                "priority": (_dv(r.get("priority")) or "3")[:1], "resolution": _dv(r.get("close_notes")),
+                "root_cause": _dv(r.get("close_code")), "resolved_at": _dv(r.get("resolved_at")) or _dv(r.get("closed_at")),
+                "tags": [t for t in [f"category:{_dv(r.get('category'))}" if _dv(r.get("category")) else "", "source:servicenow-sync"] if t],
+            })
+        result["fetched"] = len(rows)
+        if mapped:
+            imp = await _bulk_import("historical", mapped, {"email": sc.get("sync_user_email") or "system"})
+            result["inserted"], result["updated"] = imp["inserted"], imp["updated"]
+        result["ok"] = True
+    except HTTPException as e:
+        result["error"] = e.detail
+    except Exception as e:
+        result["error"] = f"{type(e).__name__}: {str(e)[:160]}"
+    upd = {"last_run": result["ts"], "last_result": result}
+    if trigger == "scheduled": upd["last_scheduled_run"] = result["ts"]
+    await db.configs.update_one({"kind": "sn_sync"}, {"$set": upd}, upsert=True)
+    await audit("servicenow.sync", sc.get("sync_user_email") or "system", {k: result.get(k) for k in ("trigger", "ok", "fetched", "inserted", "updated", "error")})
+    return result
+
+@api.get("/admin/servicenow/sync")
+async def get_sync(_: dict = Depends(require_admin)):
+    return await _sync_cfg()
+
+@api.put("/admin/servicenow/sync")
+async def put_sync(body: SyncConfig, admin=Depends(require_admin)):
+    cur = await _sync_cfg()
+    payload = body.model_dump()
+    payload["hour_utc"] = max(0, min(payload["hour_utc"], 23))
+    payload["lookback_days"] = max(1, min(payload["lookback_days"], 365))
+    payload["sync_user_id"], payload["sync_user_email"] = admin["user_id"], admin["email"]
+    if payload["enabled"] and not await db.sn_credentials.find_one({"user_id": admin["user_id"]}):
+        raise HTTPException(status_code=428, detail="Save your ServiceNow credentials first — the sync runs with your account")
+    await db.configs.update_one({"kind": "sn_sync"}, {"$set": {**payload, "kind": "sn_sync"}}, upsert=True)
+    await audit("config.sn_sync.update", admin["email"], {k: payload[k] for k in ("enabled", "hour_utc", "lookback_days")})
+    return {**cur, **payload}
+
+@api.post("/admin/servicenow/sync/run")
+async def run_sync(admin=Depends(require_admin)):
+    sc = await _sync_cfg()
+    if not sc.get("sync_user_id"):
+        raise HTTPException(status_code=400, detail="Save the sync settings first to bind your ServiceNow account")
+    return await _run_resolved_sync("manual")
+
+async def _sync_scheduler():
+    while True:
+        try:
+            sc = await _sync_cfg()
+            now = utcnow()
+            if sc.get("enabled") and now.hour == int(sc.get("hour_utc", 2)) and (sc.get("last_scheduled_run") or "")[:10] != now.strftime("%Y-%m-%d"):
+                await _run_resolved_sync("scheduled")
+        except Exception as e:
+            logger.warning(f"sync scheduler error: {e}")
+        await asyncio.sleep(60)
 
 @api.post("/me/servicenow/test")
 async def my_sn_test(request: Request):
@@ -619,6 +718,11 @@ async def analyze(sys_id: str, request: Request):
             "confidence_explanation": "AI service could not produce a structured response.",
         }
 
+    evidence = {
+        "historical": [{"id": h["id"], "number": h.get("number"), "title": h.get("short_description", ""), "application": h.get("application", ""), "score": h["_score"]} for h in ctx["historical"]],
+        "kb": [{"id": k["id"], "title": k.get("title", ""), "application": k.get("application", ""), "score": k["_score"]} for k in ctx["kb"]],
+        "rca": [{"id": r["id"], "title": r.get("title", ""), "incident_number": r.get("incident_number", ""), "application": r.get("application", ""), "score": r["_score"]} for r in ctx["rcas"]],
+    }
     record = AnalysisRecord(
         incident_number=incident_summary["number"] or sys_id,
         incident_sys_id=sys_id,
@@ -629,10 +733,22 @@ async def analyze(sys_id: str, request: Request):
         confidence=str(parsed.get("confidence","Medium")),
         status=status,
         result=parsed,
+        evidence=evidence,
     )
     await db.analyses.insert_one(record.model_dump())
     await audit("incident.analyze", user["email"], {"incident": incident_summary["number"], "status": status})
-    return {"analysis": parsed, "analysis_id": record.id, "incident_number": incident_summary["number"], "model": record.model}
+    return {"analysis": parsed, "analysis_id": record.id, "incident_number": incident_summary["number"], "model": record.model, "evidence": evidence}
+
+EVIDENCE_COLLECTIONS = {"historical": "historical_incidents", "kb": "kb_articles", "rca": "rcas"}
+
+@api.get("/evidence/{kind}/{item_id}")
+async def get_evidence(kind: str, item_id: str, request: Request):
+    await require_user(request)
+    coll = EVIDENCE_COLLECTIONS.get(kind)
+    if not coll: raise HTTPException(status_code=404, detail="Unknown evidence type")
+    doc = await db[coll].find_one({"id": item_id}, {"_id": 0})
+    if not doc: raise HTTPException(status_code=404, detail="Not found")
+    return doc
 
 @api.post("/analyses/{analysis_id}/feedback")
 async def analysis_feedback(analysis_id: str, body: Feedback, request: Request):
@@ -1017,6 +1133,7 @@ async def seed():
         await db.rcas.insert_many([{**d, "created_at": iso(utcnow())} for d in DEMO_RCA])
     if await db.applications.count_documents({}) == 0:
         await db.applications.insert_many([{**d} for d in DEMO_APPS])
+    asyncio.create_task(_sync_scheduler())
     logger.info("Seed check complete")
 
 @app.on_event("shutdown")

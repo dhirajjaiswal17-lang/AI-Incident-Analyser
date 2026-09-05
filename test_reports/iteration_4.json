@@ -1,0 +1,42 @@
+{
+  "summary": "Iteration 4 e2e testing complete. Backend: new /app/backend/tests/test_iteration4.py (21 tests) covering GET /api/admin/servicenow/sync (schema + 403 end user + 401 anon), PUT (428 when enabled=true w/o SN creds; clamps hour_utc 30->23, lookback 999->365 & 0->1; binds sync_user_email to saving admin), POST /api/admin/servicenow/sync/run (ok:false 'ServiceNow credentials required' when bound to admin test user; ok:false 'ServiceNow not configured' in demo mode; 403 end user; audit action 'servicenow.sync' recorded), analyze() evidence payload (historical/kb/rca lists with id+score>0, kb has title, historical has number), stored on record (/api/analyses/mine), GET /api/evidence/{kb|historical|rca}/{id} 200 for end user with full body, 404 unknown kind ('Unknown evidence type'), 404 unknown id, 401 anon, and regression (/api/incidents admin 428, feedback analytics, post-to-servicenow 404 unknown). All 21/21 passed serially (test_iteration4 must run with -n 0 because TestEvidence.setup_class toggles instance_url and races xdist workers). Regression on prior suites (backend_test.py + test_new_features.py + test_iteration3.py) = 111/111 passed. Frontend (playwright): /admin/servicenow shows [data-testid=sync-panel] with all 7 subtestids visible; Save with toggle OFF succeeds silently (no error); Save with toggle ON as admin test user shows 'Save your ServiceNow credentials first' toast; 'Sync now' populates [data-testid=sync-last-result] with 'Failed … ServiceNow not configured / credentials required'. /admin/analyses shows 33 clickable rows; expanding a record with evidence renders [data-testid=linked-evidence] with '12 internal sources grounded this analysis' and clicking an evidence item opens [data-testid=evidence-dialog] with [data-testid=evidence-dialog-title] (e.g. 'pgbouncer connection pool exhaustion on auth-db'); older record shows [data-testid=linked-evidence-empty]. Same on /my-analysis as end user (16 rows). Demo-mode /incidents/sn_inc_0001: Analyze runs in ~5s, [data-testid=linked-evidence] renders ABOVE [data-testid=analysis-actions] (y=943 < y=1503), both evidence-group-kb and evidence-group-historical visible, clicking an item opens the dialog with Description / Root cause / Resolution sections. State FULLY RESTORED afterwards via mongosh: sn_sync {enabled:true, hour_utc:2, lookback_days:365, sync_user_id:user_33ad5ed974a9, sync_user_email:dhirajjaiswal17@gmail.com}, servicenow.instance_url=https://dev414250.service-now.com, ai.rate_limit_per_hour=10, historical count=33 (23 source:servicenow-sync + 10 seed).",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "PUT /api/admin/servicenow/sync", "issue": "Response merges cur (old) with payload and returns `sync_user_email` from payload; when 428 is raised the sync_user_id/email in the payload never touch the DB (correct), but the docstring 'PUT binds sync_user_id/email to the saving admin' is only true on the success path — worth clarifying in docs."},
+      {"endpoint": "POST /api/admin/servicenow/sync/run", "issue": "When there is no sync_user_id yet, the endpoint silently auto-binds the current admin (write to configs) BEFORE calling _run_resolved_sync — surprising for a 'run only' endpoint and it happens even in demo mode. Consider requiring an explicit PUT first."},
+      {"endpoint": "_sync_scheduler", "issue": "Uses `now.hour == hour_utc` with a 60s sleep loop and de-dupes by comparing last_run[:10] to today's date — if a manual sync ran earlier the same day at hour_utc, the scheduled run for that day is skipped. Also uses deprecated @app.on_event('startup') to launch the task."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "/admin/servicenow ResolvedSyncPanel", "issues": ["`sync-last-result` renders 'Failed<newline>timestamp · trigger<newline>error' with no whitespace between the badge and the timestamp in DOM text (e.g. 'Failed2026-09-05 08:05 UTC · manualServiceNow not configured') — visually spaced but the raw text concatenation is jarring; add a separator or explicit spans/spaces."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration4.py",
+    "/app/test_reports/pytest/iteration4.xml",
+    "/app/test_reports/pytest/iteration4_regression.xml"
+  ],
+  "action_items": [
+    "Optional: don't auto-bind sync_user in run_sync — require an explicit PUT save first (currently a 'Sync now' from a fresh admin silently rebinds the sync account).",
+    "Optional: migrate @app.on_event('startup') → FastAPI lifespan and improve scheduler de-dup logic.",
+    "Optional: cosmetic spacing in sync-last-result text."
+  ],
+  "critical_code_review_comments": [
+    "server.py is 1155 lines — split into routers (auth, servicenow, sync, evidence, ai, imports, seed) per the >700-line guideline.",
+    "_build_context() still loads entire historical/kb/rca collections (to_list(20000)) on every analyze — will not scale; move to a Mongo text index / $search or precomputed embeddings.",
+    "Evidence scoring in _build_context and the payload construction in analyze() duplicate the same shape 3x (per collection) — could be extracted to a helper.",
+    "_sync_scheduler tick is 60 s and uses wall-clock hour equality — a container restart at, say, HH:01 during the target hour would still catch the run only if minute polling coincides; safer to use asyncio.sleep_until next hour and check inside the window."
+  ],
+  "updated_files": ["/app/backend/tests/test_iteration4.py"],
+  "success_rate": {"backend": "100% (21/21 new + 111/111 regression)", "frontend": "100% of tested flows"},
+  "test_credentials": "Bearer/cookie session_token test_session_admin_001 (admin@test.local), test_session_end_001 (user@test.local) per /app/memory/test_credentials.md",
+  "seed_data_creation": "None permanent. Created 1 fresh demo-mode analysis for user@test.local during Playwright evidence flow (harmless, appears on /my-analysis). All config state restored via mongosh at the end.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Run test_iteration4.py with `python -m pytest -n 0` (serial). TestEvidence.setup_class flips servicenow.instance_url to '' and ai.rate_limit_per_hour to 0 if quota exhausted, and teardown_class restores both; module-scope autouse fixture also restores sn_sync/instance_url/ai at the end. Do NOT touch owner user_id=user_33ad5ed974a9. If a UI test toggles the sync panel via admin@test.local the sn_sync doc will get rebound to admin — restore with: db.configs.updateOne({kind:'sn_sync'},{$set:{enabled:true,hour_utc:2,lookback_days:365,sync_user_id:'user_33ad5ed974a9',sync_user_email:'dhirajjaiswal17@gmail.com'}}). Historical collection currently has 33 records — keep INC001/002/003 and all source:servicenow-sync entries.",
+  "rca_of_the_issue": "No defects found in iteration 4 features. Only non-blocking observations noted above (silent auto-bind in POST /sync/run, cosmetic text spacing, scheduler minute-poll semantics)."
+}
