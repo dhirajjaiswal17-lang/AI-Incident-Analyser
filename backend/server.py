@@ -140,6 +140,10 @@ class AnalysisRecord(BaseModel):
     evidence: Optional[Dict[str, Any]] = None
     created_at: str = Field(default_factory=lambda: iso(utcnow()))
 
+class ManualAnalysisRequest(BaseModel):
+    short_description: str
+    description: str = ""
+
 # ---------- Auth ----------
 async def audit(action: str, user_email: str, meta: Optional[Dict[str, Any]] = None):
     await db.audit_logs.insert_one({
@@ -776,6 +780,40 @@ async def analyze(sys_id: str, request: Request):
     if status == "error":
         raise HTTPException(status_code=424, detail=ai_error)
     return {"analysis": parsed, "analysis_id": record.id, "incident_number": summary["number"], "model": record.model, "evidence": evidence}
+
+@api.post("/analyses/manual")
+async def analyze_manual(body: ManualAnalysisRequest, request: Request):
+    user = await require_user(request)
+    short = body.short_description.strip()
+    if not short:
+        raise HTTPException(status_code=400, detail="Short description is required")
+    ai_cfg = await _ai_cfg()
+    await _check_rate_limit(user, ai_cfg)
+    desc = body.description.strip()
+    ctx = await _build_context({"short_description": short, "description": desc})
+    ref = f"MANUAL-{uuid.uuid4().hex[:8].upper()}"
+    summary = {"number": ref, "short_description": short, "description": desc, "application": ""}
+
+    status, ai_error = "success", ""
+    try:
+        parsed = await _ai_analysis(_analysis_prompt(summary, ctx), ai_cfg)
+    except Exception as e:
+        logger.exception("Manual AI analyze failed")
+        status, ai_error = "error", _friendly_ai_error(e, ai_cfg)
+        parsed = _fallback_analysis(ai_error)
+
+    evidence = _evidence(ctx)
+    record = AnalysisRecord(
+        incident_number=ref, incident_sys_id="manual",
+        incident_short_description=short, application="",
+        user_email=user["email"], model=f"{ai_cfg.provider}/{ai_cfg.model}",
+        confidence=str(parsed.get("confidence", "Medium")), status=status, result=parsed, evidence=evidence,
+    )
+    await db.analyses.insert_one(record.model_dump())
+    await audit("incident.analyze.manual", user["email"], {"ref": ref, "status": status})
+    if status == "error":
+        raise HTTPException(status_code=424, detail=ai_error)
+    return {"analysis": parsed, "analysis_id": record.id, "incident_number": ref, "model": record.model, "evidence": evidence}
 
 EVIDENCE_COLLECTIONS = {"historical": "historical_incidents", "kb": "kb_articles", "rca": "rcas"}
 

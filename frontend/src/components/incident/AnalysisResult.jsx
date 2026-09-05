@@ -18,7 +18,7 @@ const SECTIONS = [
   { key: "preventive_action", title: "Preventive Action", testid: "preventive-section", icon: GitBranch },
 ];
 
-export function AnalysisResult({ analysis, analysisId, evidence, demo }) {
+export function AnalysisResult({ analysis, analysisId, evidence, demo, hidePost = false }) {
   return (
     <div className="space-y-5">
       {SECTIONS.map(s => (
@@ -29,7 +29,7 @@ export function AnalysisResult({ analysis, analysisId, evidence, demo }) {
       ))}
       <ConfidenceCard analysis={analysis} />
       {analysisId && <LinkedEvidence evidence={evidence} />}
-      {analysisId && (
+      {analysisId && !hidePost && (
         <div className="flex items-center justify-between gap-4 flex-wrap rounded-xl border border-slate-800 bg-slate-950/70 px-5 py-4" data-testid="analysis-actions">
           <div className="text-xs text-slate-400">Share this analysis with the ticket owner</div>
           <PostToServiceNow key={analysisId} analysisId={analysisId} demo={demo} />

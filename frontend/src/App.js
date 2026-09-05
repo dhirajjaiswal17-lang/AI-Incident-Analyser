@@ -9,6 +9,7 @@ import Login from "@/pages/Login";
 import AppShell from "@/layout/AppShell";
 import OpenIncidents from "@/pages/OpenIncidents";
 import IncidentDetail from "@/pages/IncidentDetail";
+import ManualAnalysis from "@/pages/ManualAnalysis";
 import AdminDashboard from "@/pages/admin/AdminDashboard";
 import ServiceNowConfig from "@/pages/admin/ServiceNowConfig";
 import AIConfig from "@/pages/admin/AIConfig";
@@ -40,6 +41,7 @@ function AppRouter() {
         <Route path="/" element={<Navigate to="/incidents" replace />} />
         <Route path="/incidents" element={<OpenIncidents />} />
         <Route path="/incidents/:sysId" element={<IncidentDetail />} />
+        <Route path="/analyze" element={<ManualAnalysis />} />
         <Route path="/my-analysis" element={<AnalysisHistory endpoint="/analyses/mine" title="My Analysis" />} />
 
         {/* Admin routes */}

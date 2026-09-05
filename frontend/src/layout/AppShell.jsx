@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { NavLink, Outlet, useNavigate } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
-import { Activity, LogOut, ShieldCheck, LayoutDashboard, Database, BookOpen, Layers, Cpu, History, ScrollText, Settings, ExternalLink, ClipboardList, FileText, KeyRound, BarChart3 } from "lucide-react";
+import { Activity, LogOut, ShieldCheck, LayoutDashboard, Database, BookOpen, Layers, Cpu, History, ScrollText, Settings, ExternalLink, ClipboardList, FileText, KeyRound, BarChart3, PenLine } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
@@ -29,6 +29,7 @@ export default function AppShell() {
 
   const endUserNav = [
     { to: "/incidents", label: "Open Incidents", icon: Activity, testid: "nav-incidents" },
+    { to: "/analyze", label: "Analyze My Issue", icon: PenLine, testid: "nav-manual-analyze" },
     { to: "/my-analysis", label: "My Analysis", icon: FileText, testid: "nav-my-analysis" },
   ];
   const adminNav = [
