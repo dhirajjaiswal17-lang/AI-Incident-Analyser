@@ -582,6 +582,12 @@ def _tokens(*parts: str) -> List[str]:
         if w not in stop and w not in seen: seen.append(w)
     return seen[:30]
 
+def _top(items: List[Dict[str, Any]], limit: int = 5) -> List[Dict[str, Any]]:
+    ranked = sorted((i for i in items if i["_score"] > 0), key=lambda x: x["_score"], reverse=True)
+    if not ranked: return []
+    floor = max(4, ranked[0]["_score"] * 0.5)
+    return [i for i in ranked if i["_score"] >= floor][:limit]
+
 async def _build_context(inc: Dict[str, Any]) -> Dict[str, Any]:
     short = inc.get("short_description","")
     desc = inc.get("description","")
@@ -591,19 +597,19 @@ async def _build_context(inc: Dict[str, Any]) -> Dict[str, Any]:
     for h in hist:
         h["_score"] = _score(f"{h.get('description','')} {h.get('root_cause','')} {h.get('resolution','')} {' '.join(h.get('tags',[]))}", toks,
                              f"{h.get('short_description','')} {h.get('application','')}")
-    hist = [h for h in sorted(hist, key=lambda x: x["_score"], reverse=True) if h["_score"] > 0][:5]
+    hist = _top(hist)
 
     kbs = await db.kb_articles.find({}, {"_id": 0}).to_list(20000)
     for k in kbs:
         k["_score"] = _score(f"{k.get('content','')[:4000]} {' '.join(k.get('tags',[]))}", toks, f"{k.get('title','')} {k.get('application','')}")
-    kbs = [k for k in sorted(kbs, key=lambda x: x["_score"], reverse=True) if k["_score"] > 0][:5]
+    kbs = _top(kbs)
     for k in kbs:
         if len(k.get("content", "")) > 3000: k["content"] = k["content"][:3000] + " …"
 
     rcas = await db.rcas.find({}, {"_id": 0}).to_list(20000)
     for r in rcas:
         r["_score"] = _score(f"{r.get('root_cause','')} {r.get('resolution','')} {' '.join(r.get('tags',[]))}", toks, f"{r.get('title','')} {r.get('application','')}")
-    rcas = [r for r in sorted(rcas, key=lambda x: x["_score"], reverse=True) if r["_score"] > 0][:5]
+    rcas = _top(rcas)
 
     fb = await db.analyses.find({"feedback": {"$ne": None}}, {"_id": 0}).sort("created_at", -1).to_list(500)
     for f in fb:
@@ -740,6 +746,21 @@ async def analyze(sys_id: str, request: Request):
     return {"analysis": parsed, "analysis_id": record.id, "incident_number": incident_summary["number"], "model": record.model, "evidence": evidence}
 
 EVIDENCE_COLLECTIONS = {"historical": "historical_incidents", "kb": "kb_articles", "rca": "rcas"}
+
+@api.get("/incidents/{sys_id}/similar")
+async def similar_incidents(sys_id: str, request: Request):
+    user = await require_user(request)
+    if not re.match(r"^[a-zA-Z0-9_\-]+$", sys_id):
+        raise HTTPException(status_code=400, detail="Invalid incident id")
+    inc = await _fetch_incident(user, await _sn_cfg(), sys_id)
+    ctx = await _build_context(inc)
+    return {
+        "historical": [{"id": h["id"], "number": h.get("number"), "title": h.get("short_description", ""), "application": h.get("application", ""),
+                        "resolution": (h.get("resolution") or "")[:220], "root_cause": (h.get("root_cause") or "")[:160], "resolved_at": h.get("resolved_at", ""), "score": h["_score"]} for h in ctx["historical"]],
+        "kb": [{"id": k["id"], "title": k.get("title", ""), "application": k.get("application", ""), "snippet": (k.get("content") or "")[:160], "score": k["_score"]} for k in ctx["kb"]],
+        "rca": [{"id": r["id"], "title": r.get("title", ""), "incident_number": r.get("incident_number", ""), "application": r.get("application", ""),
+                 "root_cause": (r.get("root_cause") or "")[:160], "score": r["_score"]} for r in ctx["rcas"]],
+    }
 
 @api.get("/evidence/{kind}/{item_id}")
 async def get_evidence(kind: str, item_id: str, request: Request):

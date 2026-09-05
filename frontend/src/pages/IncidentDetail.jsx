@@ -8,6 +8,7 @@ import { toast } from "sonner";
 import { AnalysisFeedback } from "@/components/AnalysisFeedback";
 import { PostToServiceNow } from "@/components/PostToServiceNow";
 import { LinkedEvidence } from "@/components/LinkedEvidence";
+import { SimilarIncidents } from "@/components/SimilarIncidents";
 import { openSNCredentials, SN_CREDS_SAVED } from "@/components/ServiceNowCredentialsDialog";
 
 function val(v) {
@@ -146,13 +147,16 @@ export default function IncidentDetail() {
 
         <div className="lg:col-span-2">
           {!analysis && !analyzing && (
-            <div className="rounded-2xl border border-dashed border-slate-800 bg-slate-950/40 p-10 text-center">
-              <Sparkles className="h-8 w-8 text-cyan-400 mx-auto" />
-              <h3 className="mt-3 font-semibold text-lg">Run AI Analysis</h3>
-              <p className="mt-2 text-sm text-slate-400 max-w-md mx-auto">
-                Correlates this incident with internal RCA, KB and historical patterns to produce
-                a structured analysis. Internal sources are never exposed here — only the final analysis.
-              </p>
+            <div className="space-y-5">
+              <SimilarIncidents sysId={sysId} />
+              <div className="rounded-2xl border border-dashed border-slate-800 bg-slate-950/40 p-8 text-center">
+                <Sparkles className="h-8 w-8 text-cyan-400 mx-auto" />
+                <h3 className="mt-3 font-semibold text-lg">Run AI Analysis</h3>
+                <p className="mt-2 text-sm text-slate-400 max-w-md mx-auto">
+                  Correlates this incident with internal RCA, KB and historical patterns to produce
+                  a structured root cause, impact and action plan.
+                </p>
+              </div>
             </div>
           )}
 

@@ -51,6 +51,8 @@ Build a production-ready AI Incident Analyzer web app that integrates ServiceNow
   - Analyze response + record now carry `evidence` (historical/kb/rca ids+titles+scores); `GET /api/evidence/{kind}/{id}` read-only for any user. LinkedEvidence panel on incident detail and expandable rows in Analysis History / My Analysis with drill-down dialog.
   - Owner dhirajjaiswal17@gmail.com promoted to admin (ADMIN_EMAILS in backend/.env).
 
+- 2026-09-05: v1.4 — Similar Incidents panel. `GET /api/incidents/{sys_id}/similar` (no LLM, no quota) returns top historical (with fix preview), KB and RCA matches; shown on incident detail before Analyze with drill-down dialog. RAG relevance floor added (`_top`: score ≥ max(4, 50% of best)) — also de-noises the prompt context. Full pytest suite 132/132.
+
 ## Deferred / Backlog
 - P2: KB upload de-duplication by source_file; stream size check before buffering
 - P2: Vector-based semantic RAG (embeddings)
@@ -59,5 +61,4 @@ Build a production-ready AI Incident Analyzer web app that integrates ServiceNow
 
 ## Next Actions
 - Export analytics / analysis history as CSV
-- Similar-incidents panel before Analyze
 - Migrate on_event → lifespan

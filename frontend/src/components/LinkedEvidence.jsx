@@ -57,7 +57,7 @@ export function LinkedEvidence({ evidence }) {
   );
 }
 
-function EvidenceDialog({ open, onClose }) {
+export function EvidenceDialog({ open, onClose }) {
   const d = open?.doc;
   const kind = open?.kind;
   return (
