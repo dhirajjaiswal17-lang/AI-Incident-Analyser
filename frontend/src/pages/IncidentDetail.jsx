@@ -6,6 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { ArrowLeft, Sparkles, ShieldCheck, AlertTriangle, Wrench, GitBranch, TrendingUp, KeyRound, Gauge } from "lucide-react";
 import { toast } from "sonner";
 import { AnalysisFeedback } from "@/components/AnalysisFeedback";
+import { PostToServiceNow } from "@/components/PostToServiceNow";
 import { openSNCredentials, SN_CREDS_SAVED } from "@/components/ServiceNowCredentialsDialog";
 
 function val(v) {
@@ -30,8 +31,13 @@ export default function IncidentDetail() {
   const [analysisId, setAnalysisId] = useState(null);
   const [quota, setQuota] = useState(null);
   const [needCreds, setNeedCreds] = useState(false);
+  const [demo, setDemo] = useState(true);
 
   const loadQuota = () => api.get("/analyses/quota").then(r => setQuota(r.data)).catch(() => {});
+
+  useEffect(() => {
+    api.get("/me/servicenow").then(r => setDemo(!r.data.configured)).catch(() => {});
+  }, []);
 
   useEffect(() => {
     const load = async () => {
@@ -182,6 +188,12 @@ export default function IncidentDetail() {
                   <p className="mt-2 text-sm text-slate-300">{analysis.confidence_explanation}</p>
                 </div>
               </div>
+              {analysisId && (
+                <div className="flex items-center justify-between gap-4 flex-wrap rounded-xl border border-slate-800 bg-slate-950/70 px-5 py-4" data-testid="analysis-actions">
+                  <div className="text-xs text-slate-400">Share this analysis with the ticket owner</div>
+                  <PostToServiceNow key={analysisId} analysisId={analysisId} demo={demo} />
+                </div>
+              )}
               {analysisId && <AnalysisFeedback key={analysisId} analysisId={analysisId} />}
             </div>
           )}

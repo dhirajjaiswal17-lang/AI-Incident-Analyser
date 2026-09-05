@@ -39,6 +39,13 @@ Build a production-ready AI Incident Analyzer web app that integrates ServiceNow
   - KB upload: `POST /api/admin/kb/upload` (PDF via pypdf / MD / TXT, ≤10MB) + drop zone on Admin → KB.
   - Rate limit: `rate_limit_per_hour` in AI config (default 10, 0 = unlimited, admins exempt, failed AI runs don't count); `GET /api/analyses/quota`; 429 with reset time; quota shown on incident detail.
 
+- 2026-09-05: v1.2 — Feedback Analytics, ServiceNow write-back, bulk import (testing agent: 33/33 new + 78/78 regression, frontend pass).
+  - `GET /api/admin/feedback/analytics?days=` → helpful rate, coverage, daily trend, by model/application/confidence, negative comments; page `/admin/feedback` (recharts).
+  - `POST /api/analyses/{id}/post-to-servicenow` → PATCH work_notes on the incident with the caller's SN creds (owner/admin; 400 in demo mode; 428 no creds). Verified live on INC0010002. Button on incident detail.
+  - `POST /api/admin/{historical|kb|rca}/import` — JSON array / {items} / multipart .json/.csv; flexible aliases (incident_id, service, description, root_cause, resolution, confidence→tag); upsert by number/title via bulk_write (1000 rows ≈ 0.8s; cap 20000, overflow reported in errors). "Bulk Import" dialog on the three admin pages. User's INC001–INC003 imported.
+  - RAG: token stemming, weighted title/application match, list caps 20000; prompt instructs verbatim quoting of matched internal resolutions with source citation.
+  - CRUD DELETE now 404s on unknown id; admin tables cap render at 200 rows with count footer.
+
 ## Deferred / Backlog
 - P2: KB upload de-duplication by source_file; stream size check before buffering
 - P2: Vector-based semantic RAG (embeddings)
@@ -47,5 +54,5 @@ Build a production-ready AI Incident Analyzer web app that integrates ServiceNow
 
 ## Next Actions
 - Auto-attach matching RCA/KB links inside the analysis for one-click drill down
-- Feedback analytics page (helpful rate by model / application over time)
-- Push analysis back to ServiceNow as a work note
+- Scheduled sync of resolved incidents from ServiceNow into Historical Incidents (closed tickets → training data)
+- Export analytics as CSV

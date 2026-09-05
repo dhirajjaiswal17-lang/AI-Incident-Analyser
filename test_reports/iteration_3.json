@@ -1,0 +1,43 @@
+{
+  "summary": "Iteration 3 e2e testing. Backend: created /app/backend/tests/test_iteration3.py (33 tests) covering GET /api/admin/feedback/analytics (keys, days clamp 1000->365 & 0->1, trend length, group shapes, 403 end user, 401 anon), bulk import for historical/kb/rca (JSON array with aliases, {items:[]} wrapper, 50-row CSV multipart, non-object rows -> errors, unknown target 404, empty 400, malformed body 400, 403 end user, upsert-no-duplicate), post-to-servicenow (428 admin without SN creds, 404 non-owner, 404 unknown id, 400 'Demo mode' in demo mode), fresh demo analysis has application=='Core Payment API', plus regression (health, SN config, /api/incidents 428, /api/me/servicenow, quota, KB upload, audit contains historical/kb/rca.import, dashboard). All 33 passed. Re-ran previous suites (backend_test.py + test_new_features.py) = 78/78 passed. Frontend: /admin/feedback fully renders (all fa-* testids, recharts trend, range-7/30/90 reload, nav-feedback link); /admin/historical bulk import via pasted JSON and .csv file upload both return correct counts, table + hist-count footer refresh; kb-import-btn and rca-import-btn dialogs open; demo-mode analysis on /incidents/sn_inc_0001 as end user shows analysis-actions with post-sn-btn DISABLED and post-sn-demo-hint visible, feedback-section present, and RAG output verbatim-quoted the internal KB playbook and cited INC0089123. All ServiceNow/AI config restored (instance_url=https://dev414250.service-now.com, rate_limit_per_hour=10, admin has no SN creds -> 428) and all test-created records deleted (INC001/002/003 and seeded INC00xxxxx intact).",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/admin/{name}/import", "issue": "Silent 5000-row cap (rows[:5000]) while 'received' reports the full row count and the UI copy says 'thousands of rows OK' — rows beyond 5000 are dropped with no error entry, so inserted+updated+error_count can be far less than received with no explanation."},
+      {"endpoint": "POST /api/admin/{name}/import", "issue": "Per-row await find_one + update_one (2 round-trips/row). 50 rows was fine, but large files will be slow; consider bulk_write/UpdateOne upserts."},
+      {"endpoint": "DELETE /api/admin/{name}/{id}", "issue": "Returns 200 {ok:true} even when no document matched (no 404), and still writes an audit entry."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "/admin/feedback", "issues": ["Recharts logs repeated console warnings 'The width(-1) and height(-1) of chart should be greater than 0' on every data reload (ResponsiveContainer measured before layout). Cosmetic/log noise only — chart renders correctly; adding minHeight/explicit height would silence it."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration3.py",
+    "/app/test_reports/pytest/iteration3.xml",
+    "/app/test_reports/pytest/iteration3_regression.xml"
+  ],
+  "action_items": [
+    "Optional: report or raise the 5000-row import cap and include skipped rows in errors[] so counts reconcile with 'received'.",
+    "Optional: batch the import upserts with bulk_write for large files.",
+    "Optional: silence the recharts width/height console warnings on the Feedback Analytics chart."
+  ],
+  "critical_code_review_comments": [
+    "server.py is 1027 lines and mixes auth, ServiceNow, LLM/RAG, imports, CRUD factory and seed data — split into routers/services (>700 line guideline).",
+    "_build_context() loads entire historical/kb/rca collections into memory (to_list(20000)) and scores in Python on every analyze call; this is O(N) per analysis and will not scale past a few thousand rows — move to a Mongo text index / $search with a fallback.",
+    "Import path uses request.form() with the whole file read into memory (25 MB limit); consider streaming/chunked parsing for very large CSVs.",
+    "@app.on_event('startup'/'shutdown') is deprecated in current FastAPI — migrate to the lifespan context manager.",
+    "PostToServiceNow silently swallows 428 responses (relies on the global sn-creds-required event); if that listener ever unmounts the user gets no feedback at all — consider a fallback toast."
+  ],
+  "updated_files": ["/app/backend/tests/test_iteration3.py"],
+  "success_rate": {"backend": "100% (33/33 new + 78/78 regression)", "frontend": "100% of tested flows"},
+  "seed_data_creation": "Temporary only: historical INCT001-INCT003 + 50 INCT1xxx CSV rows, KB 'Import KB test', RCA 'RCA - INC777', UI rows INCUI900/INCUI910-912, KB upload 'TEST it3 upload' — all deleted after testing (verified: historical collection back to 10 records, INC001/002/003 present). Two demo-mode analyses for user@test.local remain in db.analyses (one rated 'up' with comment 'TEST_it3 feedback'); harmless but can be purged if desired.",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "test_credentials": "Bearer/cookie session_token test_session_admin_001 (admin@test.local), test_session_end_001 (user@test.local) from /app/memory/test_credentials.md",
+  "context_for_next_testing_agent": "Run new tests with `python -m pytest test_iteration3.py -n 0` from /app/backend/tests (serial required: TestPostToServiceNow temporarily flips ServiceNow config to demo mode and restores it in a finally block; xdist loadscope would race with TestRegression). Post-to-ServiceNow real-write path is intentionally NOT tested (owner's private creds). Admin test user deliberately has no SN creds so /api/incidents returns 428. Do not delete historical INC001/INC002/INC003 or the seeded INC00xxxxx records.",
+  "rca_of_the_issue": "No defects found in the iteration 3 features; only non-blocking scalability/consistency observations (silent 5000-row import cap, per-row DB writes, recharts layout warning)."
+}

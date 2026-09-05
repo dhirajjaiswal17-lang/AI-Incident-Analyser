@@ -16,6 +16,7 @@ import CrudPage from "@/pages/admin/CrudPage";
 import { AnalysisHistory, AuditLogs } from "@/pages/admin/LogsPages";
 import IntegrationGuide from "@/pages/admin/IntegrationGuide";
 import { KBUploadZone } from "@/components/KBUploadZone";
+import FeedbackAnalytics from "@/pages/admin/FeedbackAnalytics";
 import { BookOpen, ClipboardList, Layers, History } from "lucide-react";
 
 function Protected({ children, adminOnly = false }) {
@@ -58,7 +59,7 @@ function AppRouter() {
           />
         </Protected>} />
         <Route path="/admin/kb" element={<Protected adminOnly>
-          <CrudPage title="Knowledge Base" subtitle="Runbooks and playbooks used as AI grounding." icon={BookOpen} endpoint="kb" testidPrefix="kb" extra={KBUploadZone}
+          <CrudPage title="Knowledge Base" subtitle="Runbooks and playbooks used as AI grounding." icon={BookOpen} endpoint="kb" testidPrefix="kb" extra={KBUploadZone} importable
             schema={[
               { key: "title", label: "Title" },
               { key: "application", label: "Application" },
@@ -69,7 +70,7 @@ function AppRouter() {
           />
         </Protected>} />
         <Route path="/admin/rca" element={<Protected adminOnly>
-          <CrudPage title="RCA Repository" subtitle="Historical root-cause analyses correlated with incidents." icon={ClipboardList} endpoint="rca" testidPrefix="rca"
+          <CrudPage title="RCA Repository" subtitle="Historical root-cause analyses correlated with incidents." icon={ClipboardList} endpoint="rca" testidPrefix="rca" importable
             schema={[
               { key: "title", label: "Title" },
               { key: "incident_number", label: "Incident Number" },
@@ -82,7 +83,7 @@ function AppRouter() {
           />
         </Protected>} />
         <Route path="/admin/historical" element={<Protected adminOnly>
-          <CrudPage title="Historical Incidents" subtitle="Resolved incidents used for pattern matching." icon={History} endpoint="historical" testidPrefix="hist"
+          <CrudPage title="Historical Incidents" subtitle="Resolved incidents used for pattern matching." icon={History} endpoint="historical" testidPrefix="hist" importable
             schema={[
               { key: "number", label: "Incident Number" },
               { key: "short_description", label: "Short Description" },
@@ -98,6 +99,7 @@ function AppRouter() {
           />
         </Protected>} />
         <Route path="/admin/analyses" element={<Protected adminOnly><AnalysisHistory /></Protected>} />
+        <Route path="/admin/feedback" element={<Protected adminOnly><FeedbackAnalytics /></Protected>} />
         <Route path="/admin/audit" element={<Protected adminOnly><AuditLogs /></Protected>} />
         <Route path="/admin/guide" element={<Protected adminOnly><IntegrationGuide /></Protected>} />
       </Route>

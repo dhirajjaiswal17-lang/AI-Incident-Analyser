@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { NavLink, Outlet, useNavigate } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
-import { Activity, LogOut, ShieldCheck, LayoutDashboard, Database, BookOpen, Layers, Cpu, History, ScrollText, Settings, ExternalLink, ClipboardList, FileText, KeyRound } from "lucide-react";
+import { Activity, LogOut, ShieldCheck, LayoutDashboard, Database, BookOpen, Layers, Cpu, History, ScrollText, Settings, ExternalLink, ClipboardList, FileText, KeyRound, BarChart3 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
@@ -40,6 +40,7 @@ export default function AppShell() {
     { to: "/admin/servicenow", label: "ServiceNow", icon: Database, testid: "nav-servicenow" },
     { to: "/admin/ai", label: "AI Configuration", icon: Cpu, testid: "nav-ai" },
     { to: "/admin/analyses", label: "Analysis History", icon: FileText, testid: "nav-analyses" },
+    { to: "/admin/feedback", label: "Feedback Analytics", icon: BarChart3, testid: "nav-feedback" },
     { to: "/admin/audit", label: "Audit Logs", icon: ScrollText, testid: "nav-audit" },
     { to: "/admin/guide", label: "Integration Guide", icon: ExternalLink, testid: "nav-guide" },
   ];

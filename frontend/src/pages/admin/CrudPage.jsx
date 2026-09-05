@@ -7,12 +7,13 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Plus, Search, Trash2, Pencil } from "lucide-react";
 import { toast } from "sonner";
+import { BulkImportButton } from "@/components/BulkImportButton";
 
 /**
  * Generic admin CRUD page.
  * schema: [{key,label,type: "text"|"number"|"textarea"|"tags"}]
  */
-export default function CrudPage({ title, subtitle, icon: Icon, endpoint, schema, testidPrefix, listColumns, extra: Extra }) {
+export default function CrudPage({ title, subtitle, icon: Icon, endpoint, schema, testidPrefix, listColumns, extra: Extra, importable = false }) {
   const [items, setItems] = useState([]);
   const [q, setQ] = useState("");
   const [editing, setEditing] = useState(null);
@@ -57,11 +58,12 @@ export default function CrudPage({ title, subtitle, icon: Icon, endpoint, schema
     catch (e) { toast.error(e?.response?.data?.detail || "Delete failed"); }
   };
 
-  const filtered = items.filter(it => {
+  const filteredAll = items.filter(it => {
     if (!q) return true;
     const hay = JSON.stringify(it).toLowerCase();
     return hay.includes(q.toLowerCase());
   });
+  const filtered = filteredAll.slice(0, 200);
 
   return (
     <div className="p-6 lg:p-8 max-w-[1400px] mx-auto">
@@ -74,9 +76,12 @@ export default function CrudPage({ title, subtitle, icon: Icon, endpoint, schema
           </h1>
           <p className="mt-2 text-sm text-slate-400">{subtitle}</p>
         </div>
-        <Button onClick={startCreate} className="bg-cyan-600 hover:bg-cyan-500 text-white" data-testid={`${testidPrefix}-add-btn`}>
-          <Plus className="h-4 w-4 mr-2" /> New
-        </Button>
+        <div className="flex items-center gap-2">
+          {importable && <BulkImportButton endpoint={endpoint} onImported={load} />}
+          <Button onClick={startCreate} className="bg-cyan-600 hover:bg-cyan-500 text-white" data-testid={`${testidPrefix}-add-btn`}>
+            <Plus className="h-4 w-4 mr-2" /> New
+          </Button>
+        </div>
       </div>
 
       {Extra && <Extra onUploaded={load} />}
@@ -115,6 +120,9 @@ export default function CrudPage({ title, subtitle, icon: Icon, endpoint, schema
             ))}
           </tbody>
         </table>
+        <div className="px-4 py-2 border-t border-slate-800 text-xs text-slate-500" data-testid={`${testidPrefix}-count`}>
+          Showing {filtered.length} of {filteredAll.length} records{items.length !== filteredAll.length ? ` (${items.length} total)` : ""}{filteredAll.length > 200 ? " — refine your search to see more" : ""}
+        </div>
       </div>
 
       <Dialog open={open} onOpenChange={setOpen}>

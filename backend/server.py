@@ -129,12 +129,14 @@ class AnalysisRecord(BaseModel):
     incident_number: str
     incident_sys_id: str
     incident_short_description: str = ""
+    application: str = ""
     user_email: str
     model: str
     confidence: str
     status: str
     result: Dict[str, Any]
     feedback: Optional[Dict[str, Any]] = None
+    posted_to_sn: Optional[Dict[str, Any]] = None
     created_at: str = Field(default_factory=lambda: iso(utcnow()))
 
 # ---------- Auth ----------
@@ -261,17 +263,20 @@ async def _user_sn_auth(user: Dict[str, Any]):
         raise HTTPException(status_code=428, detail="ServiceNow credentials required")
     return (doc["username"], decrypt(doc["password"]))
 
-async def _sn_request(cfg: ServiceNowConfig, auth, method: str, path: str, params: Optional[Dict]=None):
+async def _sn_request(cfg: ServiceNowConfig, auth, method: str, path: str, params: Optional[Dict]=None, json_body: Optional[Dict]=None):
     if not cfg.instance_url:
         raise HTTPException(status_code=400, detail="ServiceNow not configured")
     url = cfg.instance_url.rstrip("/") + path
     try:
         async with httpx.AsyncClient(timeout=20) as c:
-            r = await c.request(method, url, params=params, auth=auth, headers={"Accept": "application/json"})
+            r = await c.request(method, url, params=params, json=json_body, auth=auth,
+                                headers={"Accept": "application/json", "Content-Type": "application/json"})
     except httpx.HTTPError as e:
         raise HTTPException(status_code=424, detail=f"ServiceNow unreachable: {type(e).__name__}")
     if r.status_code == 401:
         raise HTTPException(status_code=424, detail="ServiceNow authentication failed — check your ServiceNow username/password")
+    if r.status_code == 403:
+        raise HTTPException(status_code=424, detail="ServiceNow denied this action — your account lacks permission")
     if r.status_code >= 500:
         raise HTTPException(status_code=424, detail="ServiceNow unavailable")
     if r.status_code >= 400:
@@ -464,38 +469,42 @@ async def test_ai(admin=Depends(require_admin)):
         await audit("ai.test", admin["email"], {"ok": False, "error": str(e)[:200]})
         return {"ok": False, "message": f"AI error: {str(e)[:200]}"}
 
-def _score(text: str, tokens: List[str]) -> int:
-    t = text.lower()
-    return sum(1 for tok in tokens if tok in t)
+def _score(text: str, tokens: List[str], primary: str = "") -> int:
+    t = text.lower(); p = primary.lower()
+    return sum((3 if tok in p else 1) for tok in tokens if tok in t or tok in p)
 
 def _tokens(*parts: str) -> List[str]:
     txt = " ".join(p for p in parts if p).lower()
     words = re.findall(r"[a-z0-9]{4,}", txt)
-    stop = {"with","from","that","this","have","been","were","when","incident","issue","error","system","user","request","service","after","before","during","because"}
-    return list({w for w in words if w not in stop})[:20]
+    stop = {"with","from","that","this","have","been","were","when","incident","issue","error","system","user","request","service","after","before","during","because","users","unable","since","last","some","also","being","there","their"}
+    seen: List[str] = []
+    for w in words:
+        if w.endswith("s") and len(w) > 4: w = w[:-1]
+        if w not in stop and w not in seen: seen.append(w)
+    return seen[:30]
 
 async def _build_context(inc: Dict[str, Any]) -> Dict[str, Any]:
     short = inc.get("short_description","")
     desc = inc.get("description","")
     ci = inc.get("cmdb_ci","") if isinstance(inc.get("cmdb_ci"), str) else (inc.get("cmdb_ci") or {}).get("display_value","") if isinstance(inc.get("cmdb_ci"), dict) else ""
     toks = _tokens(short, desc, ci)
-    hist = await db.historical_incidents.find({}, {"_id": 0}).to_list(1000)
+    hist = await db.historical_incidents.find({}, {"_id": 0}).to_list(20000)
     for h in hist:
-        h["_score"] = _score(f"{h.get('short_description','')} {h.get('description','')} {h.get('root_cause','')} {h.get('application','')}", toks)
-    hist = sorted(hist, key=lambda x: x["_score"], reverse=True)[:5]
-    hist = [h for h in hist if h["_score"] > 0][:5]
+        h["_score"] = _score(f"{h.get('description','')} {h.get('root_cause','')} {h.get('resolution','')} {' '.join(h.get('tags',[]))}", toks,
+                             f"{h.get('short_description','')} {h.get('application','')}")
+    hist = [h for h in sorted(hist, key=lambda x: x["_score"], reverse=True) if h["_score"] > 0][:5]
 
-    kbs = await db.kb_articles.find({}, {"_id": 0}).to_list(1000)
+    kbs = await db.kb_articles.find({}, {"_id": 0}).to_list(20000)
     for k in kbs:
-        k["_score"] = _score(f"{k.get('title','')} {k.get('content','')} {' '.join(k.get('tags',[]))}", toks)
-    kbs = sorted(kbs, key=lambda x: x["_score"], reverse=True)[:5]
-    kbs = [k for k in kbs if k["_score"] > 0][:5]
+        k["_score"] = _score(f"{k.get('content','')[:4000]} {' '.join(k.get('tags',[]))}", toks, f"{k.get('title','')} {k.get('application','')}")
+    kbs = [k for k in sorted(kbs, key=lambda x: x["_score"], reverse=True) if k["_score"] > 0][:5]
+    for k in kbs:
+        if len(k.get("content", "")) > 3000: k["content"] = k["content"][:3000] + " …"
 
-    rcas = await db.rcas.find({}, {"_id": 0}).to_list(1000)
+    rcas = await db.rcas.find({}, {"_id": 0}).to_list(20000)
     for r in rcas:
-        r["_score"] = _score(f"{r.get('title','')} {r.get('root_cause','')} {r.get('resolution','')} {r.get('application','')}", toks)
-    rcas = sorted(rcas, key=lambda x: x["_score"], reverse=True)[:5]
-    rcas = [r for r in rcas if r["_score"] > 0][:5]
+        r["_score"] = _score(f"{r.get('root_cause','')} {r.get('resolution','')} {' '.join(r.get('tags',[]))}", toks, f"{r.get('title','')} {r.get('application','')}")
+    rcas = [r for r in sorted(rcas, key=lambda x: x["_score"], reverse=True) if r["_score"] > 0][:5]
 
     fb = await db.analyses.find({"feedback": {"$ne": None}}, {"_id": 0}).sort("created_at", -1).to_list(500)
     for f in fb:
@@ -567,6 +576,10 @@ async def analyze(sys_id: str, request: Request):
         "recommended_immediate_action, preventive_action, confidence (one of High/Medium/Low), "
         "confidence_explanation. Each value is plain text (not markdown). "
         "Root cause must clearly say it is AI-assisted and should be validated with logs/telemetry. "
+        "PRIORITY RULE: when an INTERNAL HISTORICAL INCIDENT, KB article or RCA closely matches the current incident, "
+        "quote its resolution / runbook steps EXACTLY (verbatim) in recommended_immediate_action and cite the source "
+        "(e.g. 'per INC001' or 'per KB: <title>'). Prefer proven internal resolutions over generic advice; only fall back to "
+        "generic guidance when nothing internal matches, and say so. "
         "If PAST ANALYST FEEDBACK is provided, treat 'not helpful' items as corrections: avoid repeating those "
         "conclusions and incorporate the analyst comments."
     )
@@ -610,6 +623,7 @@ async def analyze(sys_id: str, request: Request):
         incident_number=incident_summary["number"] or sys_id,
         incident_sys_id=sys_id,
         incident_short_description=incident_summary["short_description"],
+        application=incident_summary["application"],
         user_email=user["email"],
         model=f"{ai_cfg.provider}/{ai_cfg.model}",
         confidence=str(parsed.get("confidence","Medium")),
@@ -631,6 +645,89 @@ async def analysis_feedback(analysis_id: str, body: Feedback, request: Request):
         raise HTTPException(status_code=404, detail="Analysis not found")
     await audit("analysis.feedback", user["email"], {"analysis_id": analysis_id, "rating": body.rating})
     return {"ok": True, "feedback": fb}
+
+def _work_note(a: Dict[str, Any]) -> str:
+    r = a.get("result", {})
+    lines = [
+        f"[AI Incident Analyzer] Analysis by {a.get('user_email')} · model {a.get('model')} · confidence {a.get('confidence')}",
+        "",
+        f"Likely Root Cause (AI-assisted, validate with logs/telemetry): {r.get('likely_root_cause','')}",
+        "",
+        f"Business Impact: {r.get('business_impact','')}",
+        "",
+        f"Recommended Immediate Action: {r.get('recommended_immediate_action','')}",
+        "",
+        f"Preventive Action: {r.get('preventive_action','')}",
+        "",
+        f"Confidence rationale: {r.get('confidence_explanation','')}",
+    ]
+    return "\n".join(lines)
+
+@api.post("/analyses/{analysis_id}/post-to-servicenow")
+async def post_to_servicenow(analysis_id: str, request: Request):
+    user = await require_user(request)
+    q = {"id": analysis_id} if user.get("role") == "admin" else {"id": analysis_id, "user_email": user["email"]}
+    a = await db.analyses.find_one(q, {"_id": 0})
+    if not a: raise HTTPException(status_code=404, detail="Analysis not found")
+    if a.get("status") != "success":
+        raise HTTPException(status_code=400, detail="Cannot post a failed analysis")
+    cfg = await _sn_cfg()
+    if not cfg.instance_url:
+        raise HTTPException(status_code=400, detail="Demo mode — connect ServiceNow to post work notes")
+    auth = await _user_sn_auth(user)
+    await _sn_request(cfg, auth, "PATCH", f"/api/now/table/{cfg.table}/{a['incident_sys_id']}",
+                      {"sysparm_fields": "sys_id,number"}, {"work_notes": _work_note(a)})
+    posted = {"ts": iso(utcnow()), "by": user["email"]}
+    await db.analyses.update_one({"id": analysis_id}, {"$set": {"posted_to_sn": posted}})
+    await audit("analysis.post_to_servicenow", user["email"], {"analysis_id": analysis_id, "incident": a.get("incident_number")})
+    return {"ok": True, "posted_to_sn": posted, "incident_number": a.get("incident_number")}
+
+# ---------- Feedback analytics ----------
+def _rate(up: int, total: int) -> Optional[int]:
+    return round(100 * up / total) if total else None
+
+def _group(items: List[Dict[str, Any]], key_fn) -> List[Dict[str, Any]]:
+    buckets: Dict[str, Dict[str, int]] = {}
+    for a in items:
+        k = key_fn(a) or "Unknown"
+        b = buckets.setdefault(k, {"total": 0, "up": 0, "down": 0})
+        b["total"] += 1
+        b["up" if a["feedback"]["rating"] == "up" else "down"] += 1
+    out = [{"key": k, **v, "rate": _rate(v["up"], v["total"])} for k, v in buckets.items()]
+    return sorted(out, key=lambda x: (-x["total"], x["key"]))
+
+@api.get("/admin/feedback/analytics")
+async def feedback_analytics(_: dict = Depends(require_admin), days: int = 30):
+    days = max(1, min(days, 365))
+    since = iso(utcnow() - timedelta(days=days))
+    total_analyses = await db.analyses.count_documents({"created_at": {"$gte": since}})
+    rated = await db.analyses.find({"feedback": {"$ne": None}, "created_at": {"$gte": since}}, {"_id": 0}).sort("created_at", -1).to_list(5000)
+    up = sum(1 for a in rated if a["feedback"]["rating"] == "up")
+    by_day: Dict[str, Dict[str, int]] = {}
+    for i in range(days):
+        d = (utcnow() - timedelta(days=days - 1 - i)).strftime("%Y-%m-%d")
+        by_day[d] = {"total": 0, "up": 0}
+    for a in rated:
+        d = a["created_at"][:10]
+        if d in by_day:
+            by_day[d]["total"] += 1
+            if a["feedback"]["rating"] == "up": by_day[d]["up"] += 1
+    trend = [{"date": d, **v, "rate": _rate(v["up"], v["total"])} for d, v in by_day.items()]
+    negatives = [{
+        "analysis_id": a["id"], "incident_number": a.get("incident_number"), "application": a.get("application") or "Unknown",
+        "model": a.get("model"), "comment": a["feedback"].get("comment", ""), "by": a["feedback"].get("by"), "ts": a["feedback"].get("ts"),
+        "ai_root_cause": (a.get("result") or {}).get("likely_root_cause", "")[:300],
+    } for a in rated if a["feedback"]["rating"] == "down"][:20]
+    return {
+        "days": days, "total_analyses": total_analyses, "rated": len(rated), "up": up, "down": len(rated) - up,
+        "helpful_rate": _rate(up, len(rated)),
+        "coverage": _rate(len(rated), total_analyses),
+        "by_model": _group(rated, lambda a: a.get("model")),
+        "by_application": _group(rated, lambda a: a.get("application")),
+        "by_confidence": _group(rated, lambda a: a.get("confidence")),
+        "trend": trend,
+        "negatives": negatives,
+    }
 
 # ---------- KB document upload ----------
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
@@ -666,7 +763,7 @@ async def kb_upload(file: UploadFile = File(...), application: str = Form(""), t
 def _crud_routes(name: str, collection: str, model_cls):
     @api.get(f"/admin/{name}")
     async def _list(_: dict = Depends(require_admin)):
-        items = await db[collection].find({}, {"_id": 0}).sort("created_at", -1).to_list(1000)
+        items = await db[collection].find({}, {"_id": 0}).sort("created_at", -1).to_list(20000)
         return items
     @api.post(f"/admin/{name}")
     async def _create(item: model_cls, admin=Depends(require_admin)):
@@ -684,7 +781,9 @@ def _crud_routes(name: str, collection: str, model_cls):
         return doc
     @api.delete(f"/admin/{name}/{{item_id}}")
     async def _delete(item_id: str, admin=Depends(require_admin)):
-        await db[collection].delete_one({"id": item_id})
+        res = await db[collection].delete_one({"id": item_id})
+        if res.deleted_count == 0:
+            raise HTTPException(status_code=404, detail="Not found")
         await audit(f"{name}.delete", admin["email"], {"id": item_id})
         return {"ok": True}
 
@@ -692,6 +791,139 @@ _crud_routes("applications", "applications", Application)
 _crud_routes("kb", "kb_articles", KBArticle)
 _crud_routes("rca", "rcas", RCA)
 _crud_routes("historical", "historical_incidents", HistoricalIncident)
+
+# ---------- Bulk import (JSON / CSV) ----------
+IMPORT_SPECS = {
+    "historical": {
+        "collection": "historical_incidents", "model": HistoricalIncident, "key": "number",
+        "aliases": {
+            "number": ["number", "incident_id", "incident", "incident_number", "id", "ticket"],
+            "short_description": ["short_description", "title", "summary", "description"],
+            "description": ["description", "details", "long_description"],
+            "application": ["application", "service", "app", "cmdb_ci", "ci", "system"],
+            "priority": ["priority", "severity", "sev"],
+            "resolution": ["resolution", "fix", "workaround", "resolved_by", "solution"],
+            "root_cause": ["root_cause", "rootcause", "cause", "rca"],
+            "resolved_at": ["resolved_at", "resolved", "closed_at", "resolved_date"],
+            "tags": ["tags", "keywords", "labels"],
+        },
+    },
+    "kb": {
+        "collection": "kb_articles", "model": KBArticle, "key": "title",
+        "aliases": {
+            "title": ["title", "name", "subject", "article"],
+            "content": ["content", "body", "text", "steps", "runbook", "description"],
+            "application": ["application", "service", "app", "cmdb_ci", "system"],
+            "tags": ["tags", "keywords", "labels"],
+        },
+    },
+    "rca": {
+        "collection": "rcas", "model": RCA, "key": "title",
+        "aliases": {
+            "title": ["title", "name", "summary"],
+            "incident_number": ["incident_number", "incident_id", "incident", "number"],
+            "application": ["application", "service", "app", "cmdb_ci", "system"],
+            "root_cause": ["root_cause", "rootcause", "cause"],
+            "resolution": ["resolution", "fix", "corrective_action", "solution"],
+            "tags": ["tags", "keywords", "labels"],
+        },
+    },
+}
+
+def _parse_import_payload(filename: str, data: bytes) -> List[Dict[str, Any]]:
+    import csv, io
+    text = data.decode("utf-8-sig", errors="replace").strip()
+    if not text: return []
+    if filename.lower().endswith(".csv") or (not text.startswith(("[", "{"))):
+        rows = list(csv.DictReader(io.StringIO(text)))
+        return [dict(r) for r in rows]
+    parsed = json.loads(text)
+    if isinstance(parsed, dict):
+        for k in ("items", "incidents", "records", "data", "result", "articles"):
+            if isinstance(parsed.get(k), list): return parsed[k]
+        return [parsed]
+    return parsed if isinstance(parsed, list) else []
+
+def _map_row(row: Dict[str, Any], spec: Dict[str, Any]) -> Dict[str, Any]:
+    low = {str(k).strip().lower(): v for k, v in row.items()}
+    out: Dict[str, Any] = {}
+    for field, names in spec["aliases"].items():
+        for n in names:
+            if n in low and low[n] not in (None, ""):
+                out[field] = low[n]; break
+    extras = {k: v for k, v in low.items() if k not in {n for ns in spec["aliases"].values() for n in ns} and v not in (None, "")}
+    tags = out.get("tags", [])
+    if isinstance(tags, str): tags = [t.strip() for t in re.split(r"[,;|]", tags) if t.strip()]
+    for k, v in extras.items():
+        if k in ("confidence", "category", "subcategory", "assignment_group", "state"):
+            tags.append(f"{k}:{v}")
+    out["tags"] = [str(t) for t in tags]
+    if "priority" in out: out["priority"] = str(out["priority"])
+    if spec["model"] is HistoricalIncident:
+        out.setdefault("short_description", out.get("description", ""))
+        if out.get("description") == out.get("short_description"): out["description"] = ""
+        out["number"] = str(out.get("number", "")).strip()
+    if spec["model"] is RCA and not out.get("title"):
+        out["title"] = f"RCA - {out.get('incident_number') or out.get('application') or 'imported'}"
+    return out
+
+MAX_IMPORT_ROWS = 20000
+
+async def _bulk_import(name: str, rows: List[Dict[str, Any]], admin: Dict[str, Any]):
+    from pymongo import UpdateOne
+    spec = IMPORT_SPECS[name]
+    coll = db[spec["collection"]]
+    errors: List[Dict[str, Any]] = []
+    docs: Dict[str, Dict[str, Any]] = {}
+    for i, row in enumerate(rows[:MAX_IMPORT_ROWS]):
+        if not isinstance(row, dict):
+            errors.append({"row": i + 1, "error": "not an object"}); continue
+        try:
+            doc = spec["model"](**_map_row(row, spec)).model_dump()
+        except Exception as e:
+            errors.append({"row": i + 1, "error": str(e)[:160]}); continue
+        key_val = str(doc.get(spec["key"]) or "").strip()
+        if not key_val:
+            errors.append({"row": i + 1, "error": f"missing {spec['key']}"}); continue
+        docs[key_val] = doc
+    skipped = max(0, len(rows) - MAX_IMPORT_ROWS)
+    if skipped: errors.append({"row": MAX_IMPORT_ROWS + 1, "error": f"{skipped} rows beyond the {MAX_IMPORT_ROWS}-row limit were skipped"})
+    inserted = updated = 0
+    if docs:
+        existing = {d[spec["key"]]: d["id"] async for d in coll.find({spec["key"]: {"$in": list(docs)}}, {"_id": 0, "id": 1, spec["key"]: 1})}
+        ops = []
+        for key_val, doc in docs.items():
+            if key_val in existing:
+                doc["id"] = existing[key_val]; updated += 1
+            else:
+                inserted += 1
+            ops.append(UpdateOne({"id": doc["id"]}, {"$set": doc}, upsert=True))
+        for i in range(0, len(ops), 1000):
+            await coll.bulk_write(ops[i:i + 1000], ordered=False)
+    await audit(f"{name}.import", admin["email"], {"inserted": inserted, "updated": updated, "errors": len(errors)})
+    return {"inserted": inserted, "updated": updated, "errors": errors[:50], "error_count": len(errors), "received": len(rows)}
+
+@api.post("/admin/{name}/import")
+async def import_records(name: str, request: Request, admin=Depends(require_admin)):
+    if name not in IMPORT_SPECS:
+        raise HTTPException(status_code=404, detail="Unknown import target")
+    ctype = request.headers.get("content-type", "")
+    if ctype.startswith("multipart/form-data"):
+        form = await request.form()
+        f = form.get("file")
+        if f is None: raise HTTPException(status_code=400, detail="file is required")
+        data = await f.read()
+        if len(data) > 25 * 1024 * 1024: raise HTTPException(status_code=413, detail="File exceeds 25 MB limit")
+        try:
+            rows = _parse_import_payload(f.filename or "import.json", data)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Could not parse file: {str(e)[:120]}")
+    else:
+        body = await request.json()
+        rows = body.get("items") if isinstance(body, dict) else body
+        if not isinstance(rows, list): raise HTTPException(status_code=400, detail="Send a JSON array or {items: [...]}")
+    if not rows: raise HTTPException(status_code=400, detail="No records found")
+    return await _bulk_import(name, rows, admin)
 
 @api.get("/admin/analyses")
 async def list_analyses(_: dict = Depends(require_admin), limit: int = 200):
