@@ -1,0 +1,155 @@
+{
+  "project_name": "AI Incident Analyzer - Enterprise Banking IT Command Center",
+  "theme_strategy": {
+    "mode": "dark_primary_with_light_toggle",
+    "vibe": "Tactical Enterprise Command Center - Precision, High Density, APCA Compliant",
+    "color_archetype": "ARCHETYPE 2 (Performance Pro) meets ARCHETYPE 4 (Swiss High-Contrast)",
+    "base_colors": {
+      "background_dark": "#0B0F17",
+      "surface_dark": "#111827",
+      "surface_secondary": "#1E293B",
+      "border_dark": "#1F293D",
+      "border_active": "#3B82F6",
+      "text_primary": "#F8FAFC",
+      "text_secondary": "#94A3B8",
+      "text_muted": "#64748B"
+    },
+    "severity_status_colors": {
+      "critical_p1": {
+        "badge_bg": "rgba(225, 29, 72, 0.15)",
+        "badge_border": "#F43F5E",
+        "badge_text": "#FB7185",
+        "pulse_ring": "#E11D48"
+      },
+      "high_p2": {
+        "badge_bg": "rgba(234, 88, 12, 0.15)",
+        "badge_border": "#F97316",
+        "badge_text": "#FB923C"
+      },
+      "medium_p3": {
+        "badge_bg": "rgba(217, 119, 6, 0.15)",
+        "badge_border": "#F59E0B",
+        "badge_text": "#FBBF24"
+      },
+      "low_p4": {
+        "badge_bg": "rgba(16, 185, 129, 0.15)",
+        "badge_border": "#10B981",
+        "badge_text": "#34D399"
+      }
+    },
+    "ai_engine_colors": {
+      "glow_cyan": "#06B6D4",
+      "accent_indigo": "#6366F1",
+      "confidence_high": "#10B981",
+      "confidence_medium": "#F59E0B",
+      "confidence_low": "#EF4444"
+    }
+  },
+  "typography": {
+    "heading_font": "Cabinet Grotesk, Plus Jakarta Sans, sans-serif",
+    "body_font": "Manrope, IBM Plex Sans, sans-serif",
+    "mono_font": "JetBrains Mono, Source Code Pro, monospace",
+    "anti_default_rule": "FORBIDDEN to use Inter for Headings or Section Titles. Use Cabinet Grotesk / Plus Jakarta Sans with tight tracking.",
+    "hierarchy": {
+      "h1_hero": "text-3xl sm:text-4xl lg:text-5xl font-extrabold tracking-tight",
+      "h2_section": "text-xl sm:text-2xl lg:text-3xl font-bold tracking-tight",
+      "h3_card": "text-lg sm:text-xl font-semibold tracking-normal",
+      "h4_widget": "text-base font-medium text-slate-200",
+      "body_text": "text-sm sm:text-base leading-relaxed text-slate-300",
+      "mono_data": "font-mono text-xs sm:text-sm text-cyan-400 font-medium",
+      "eyebrow": "text-xs font-bold tracking-[0.2em] uppercase text-slate-400"
+    }
+  },
+  "layout_and_spacing": {
+    "grid_mode": "MODE B: High Density Grid (Dashboards & Analytics)",
+    "container_padding": "px-4 sm:px-6 lg:px-8 py-6",
+    "card_padding": "p-5 sm:p-6",
+    "table_padding": "px-4 py-3",
+    "gap_strategy": "gap-4 md:gap-6",
+    "borders": "1px solid #1F293D, crisp edges with subtle inner light bleed on active elements",
+    "navigation_style": "Glassmorphism with backdrop-blur-md bg-slate-900/80 border-b border-slate-800 z-50 sticky top-0"
+  },
+  "component_architecture": {
+    "end_user_views": [
+      {
+        "name": "Active ServiceNow Incidents Table",
+        "features": ["Search by Incident ID / Short Description", "Filter by Severity (P1-P4), Status (New/In Progress/On Hold), Application", "Sortable columns", "Pagination (10/25/50 per page)", "Real-time Refresh button with loading spinner", "Analyze Incident action button per row"]
+      },
+      {
+        "name": "Incident Details Modal & AI Analysis Trigger",
+        "features": ["ServiceNow Incident metadata preview (SYS_ID, State, Assigned Group, Urgency)", "Click 'Analyze Incident' triggering mock/live LLM API request with animated streaming progress state"]
+      },
+      {
+        "name": "AI Analysis Result Panel (5 Sections)",
+        "sections": [
+          "1. Likely Root Cause (Detailed breakdown with log evidence)",
+          "2. Business Impact (Financial risk, impacted user count, SLA breach countdown)",
+          "3. Recommended Immediate Action (Step-by-step mitigation)",
+          "4. Preventive Action (Long-term architecture fix / KB reference)",
+          "5. Confidence Badge (High/Medium/Low with score bar & explainability tooltip)"
+        ]
+      }
+    ],
+    "admin_dashboard_views": [
+      {
+        "name": "ServiceNow Integration Config",
+        "features": ["Instance URL, Username/Password or OAuth Token, Table Name, Connection Test button with success/failure status diagnostic"]
+      },
+      {
+        "name": "AI LLM Configuration",
+        "features": ["Provider selector (OpenAI, Anthropic, Custom LLM), Model ID, API Key input with masking, Temperature slider, Prompt Template editor, Test AI Connection button"]
+      },
+      {
+        "name": "Applications CRUD",
+        "features": ["Manage Banking Apps (e.g., Core Banking Gateway, Payment Processing API, Mobile Auth Service), Tier assignment, App Lead, SLA threshold"]
+      },
+      {
+        "name": "Knowledge Base CRUD",
+        "features": ["Manage Articles, Incident Tags, Fix Procedures, Searchable KB repository for AI grounding"]
+      },
+      {
+        "name": "RCA Repository CRUD",
+        "features": ["Historical Root Cause Analyses, Resolved Incident Patterns, Post-Mortem documents upload/editor"]
+      },
+      {
+        "name": "Historical Incidents Viewer",
+        "features": ["Archived ServiceNow tickets, Resolution time metrics, Repeat incident detector"]
+      },
+      {
+        "name": "Analysis History Table",
+        "features": ["Log of all AI analyses run, user who triggered, execution time, token usage, feedback rating"]
+      },
+      {
+        "name": "Audit Logs Viewer",
+        "features": ["Full security compliance trail (User login, Config updates, Incident actions, Export logs to JSON/CSV)"]
+      },
+      {
+        "name": "Integration & Deployment Guide",
+        "features": ["Interactive step-by-step guide with code snippets, ServiceNow Webhook setup, Docker setup, Environment Variable validator"]
+      }
+    ]
+  },
+  "motion_and_interactions": {
+    "hover_states": "hover:border-blue-500/50 hover:bg-slate-800/60 transition-colors duration-200",
+    "active_buttons": "active:scale-[0.98] transition-transform duration-150",
+    "ai_loading_state": "Pulse shimmer with blue/cyan glowing border during AI analysis generation",
+    "toast_notifications": "Use sonner library for success/error alerts with distinct high-contrast status icons"
+  },
+  "media_and_assets": {
+    "hero_image_url": "https://images.unsplash.com/photo-1785682231847-93265d8e633d?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NDk1Nzl8MHwxfHNlYXJjaHwxfHxlbnRlcnByaXNlJTIwc2VydmVyJTIwcm9vbSUyMGNsb3VkJTIwZGF0YSUyMGNlbnRlciUyMHNlY3VyaXR5fGVufDB8fHx8MTc4ODU4OTg0NHww&ixlib=rb-4.1.0&q=85",
+    "icons": "Use lucide-react icons exclusively (e.g., AlertTriangle, Activity, ShieldCheck, Database, Cpu, Terminal, RefreshCw, Filter, Search, BookOpen, Layers, History, Settings, ExternalLink)"
+  },
+  "testing_and_accessibility": {
+    "data_testid_rule": "ALL interactive components, table rows, form inputs, modals, status badges, and action buttons MUST have a kebab-case data-testid attribute (e.g. data-testid='incident-search-input', data-testid='analyze-incident-btn-INC0012948', data-testid='servicenow-test-connection-btn')",
+    "contrast_standard": "APCA & WCAG AA compliant contrast on all badges and interactive states"
+  },
+  "instructions_to_main_agent": [
+    "1. Read this guidelines file carefully before starting frontend implementation.",
+    "2. Maintain strict separation of End User Incident Workspace and Admin Management Panels via sub-routes or sidebar tabs.",
+    "3. Build rich interactive mock data with realistic enterprise banking incidents (e.g. 'INC0091823: Core Payment API 504 Timeout during SWIFT processing', 'INC0091824: PostgreSQL Connection Pool Exhaustion on Auth Cluster').",
+    "4. Ensure Google Auth mock/live state works smoothly with role toggling (End User vs Admin) for easy test verification.",
+    "5. Every table must support quick search, column filtering, and pagination.",
+    "6. Include a clear 'Test Connection' diagnostic dialog/card for both ServiceNow REST API and AI API in the Admin section.",
+    "7. Always attach appropriate data-testid attributes to all interactive elements."
+  ]
+}
