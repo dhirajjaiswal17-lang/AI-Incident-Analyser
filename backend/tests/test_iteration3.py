@@ -282,7 +282,7 @@ class TestRegression:
         d = admin.get(f"{BASE_URL}/api/admin/servicenow/config").json()
         assert d["instance_url"] == REAL_SN_URL, d
         assert d["table"] == "incident"
-        assert d["show_work_notes"] is False
+        assert not d["show_work_notes"]
 
     def test_incidents_admin_428_without_creds(self, admin):
         r = admin.get(f"{BASE_URL}/api/incidents")
@@ -290,8 +290,8 @@ class TestRegression:
 
     def test_me_servicenow_admin(self, admin):
         d = admin.get(f"{BASE_URL}/api/me/servicenow").json()
-        assert d["configured"] is True
-        assert d["has_credentials"] is False
+        assert d["configured"]
+        assert not d["has_credentials"]
         assert d["instance_url"] == REAL_SN_URL
 
     def test_quota_endpoint(self, enduser):

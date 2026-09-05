@@ -5,8 +5,9 @@ import os, time, pytest, requests
 from pymongo import MongoClient
 
 BASE = os.environ.get("REACT_APP_BACKEND_URL", "https://incident-insight.preview.emergentagent.com").rstrip("/")
-ADMIN = {"Authorization": "Bearer test_session_admin_001"}
-END = {"Authorization": "Bearer test_session_end_001"}
+from conftest import ADMIN_TOKEN, END_USER_TOKEN
+ADMIN = {"Authorization": f"Bearer {ADMIN_TOKEN}"}
+END = {"Authorization": f"Bearer {END_USER_TOKEN}"}
 
 # Mongo direct (for save/restore of live config)
 _MC = MongoClient("mongodb://localhost:27017")
@@ -63,7 +64,7 @@ class TestSyncConfig:
                          headers=ADMIN, timeout=15)
         assert r.status_code == 200
         d = r.json()
-        assert d["enabled"] is False
+        assert not d["enabled"]
         assert d["hour_utc"] == 23
         assert d["lookback_days"] == 365
         assert d["sync_user_email"] == "admin@test.local"
@@ -83,7 +84,7 @@ class TestSyncRun:
                           headers=ADMIN, timeout=30)
         assert r.status_code == 200
         d = r.json()
-        assert d["ok"] is False
+        assert not d["ok"]
         assert "credentials" in (d.get("error", "") or "").lower()
         assert d["fetched"] == 0
 
@@ -95,7 +96,7 @@ class TestSyncRun:
                               headers=ADMIN, timeout=30)
             assert r.status_code == 200
             d = r.json()
-            assert d["ok"] is False
+            assert not d["ok"]
             assert "not configured" in (d.get("error", "") or "").lower()
         finally:
             DB.configs.update_one({"kind": "servicenow"},

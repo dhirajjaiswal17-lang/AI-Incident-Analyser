@@ -364,41 +364,46 @@ def _dv(x) -> str:
     if isinstance(x, dict): return str(x.get("display_value") or "")
     return str(x or "")
 
+async def _fetch_resolved_rows(cfg: ServiceNowConfig, auth, days: int) -> List[Dict[str, Any]]:
+    q = f"stateIN6,7^resolved_at>=javascript:gs.daysAgoStart({days})^ORclosed_at>=javascript:gs.daysAgoStart({days})"
+    rows: List[Dict[str, Any]] = []
+    for offset in range(0, 5000, 200):
+        data = await _sn_request(cfg, auth, "GET", f"/api/now/table/{cfg.table}",
+                                 {"sysparm_query": q, "sysparm_fields": ",".join(SYNC_FIELDS), "sysparm_limit": 200,
+                                  "sysparm_offset": offset, "sysparm_display_value": "true"})
+        page = data.get("result", [])
+        rows.extend(page)
+        if len(page) < 200: break
+    return rows
+
+def _map_resolved_row(r: Dict[str, Any]) -> Dict[str, Any]:
+    category = _dv(r.get("category"))
+    return {
+        "number": _dv(r.get("number")), "short_description": _dv(r.get("short_description")) or "(no title)",
+        "description": _dv(r.get("description"))[:4000], "application": _dv(r.get("cmdb_ci")),
+        "priority": (_dv(r.get("priority")) or "3")[:1], "resolution": _dv(r.get("close_notes")),
+        "root_cause": _dv(r.get("close_code")), "resolved_at": _dv(r.get("resolved_at")) or _dv(r.get("closed_at")),
+        "tags": ([f"category:{category}"] if category else []) + ["source:servicenow-sync"],
+    }
+
+async def _sync_resolved(sc: Dict[str, Any], cfg: ServiceNowConfig, result: Dict[str, Any]) -> None:
+    if not cfg.instance_url: raise HTTPException(status_code=400, detail="ServiceNow not configured")
+    if not sc.get("sync_user_id"): raise HTTPException(status_code=400, detail="No sync account — save the sync settings while logged in with your ServiceNow credentials")
+    auth = await _user_sn_auth({"user_id": sc["sync_user_id"]})
+    days = max(1, min(int(sc.get("lookback_days") or 7), 365))
+    rows = await _fetch_resolved_rows(cfg, auth, days)
+    mapped = [_map_resolved_row(r) for r in rows if _dv(r.get("number"))]
+    result["fetched"] = len(rows)
+    if mapped:
+        imp = await _bulk_import("historical", mapped, {"email": sc.get("sync_user_email") or "system"})
+        result["inserted"], result["updated"] = imp["inserted"], imp["updated"]
+    result["ok"] = True
+
 async def _run_resolved_sync(trigger: str) -> Dict[str, Any]:
     sc = await _sync_cfg()
-    cfg = await _sn_cfg()
     result: Dict[str, Any] = {"ts": iso(utcnow()), "trigger": trigger, "ok": False, "fetched": 0, "inserted": 0, "updated": 0}
     try:
-        if not cfg.instance_url: raise HTTPException(status_code=400, detail="ServiceNow not configured")
-        if not sc.get("sync_user_id"): raise HTTPException(status_code=400, detail="No sync account — save the sync settings while logged in with your ServiceNow credentials")
-        auth = await _user_sn_auth({"user_id": sc["sync_user_id"]})
-        days = max(1, min(int(sc.get("lookback_days") or 7), 365))
-        q = f"stateIN6,7^resolved_at>=javascript:gs.daysAgoStart({days})^ORclosed_at>=javascript:gs.daysAgoStart({days})"
-        rows: List[Dict[str, Any]] = []
-        offset = 0
-        while offset < 5000:
-            data = await _sn_request(cfg, auth, "GET", f"/api/now/table/{cfg.table}",
-                                     {"sysparm_query": q, "sysparm_fields": ",".join(SYNC_FIELDS), "sysparm_limit": 200,
-                                      "sysparm_offset": offset, "sysparm_display_value": "true"})
-            page = data.get("result", [])
-            rows.extend(page)
-            if len(page) < 200: break
-            offset += 200
-        mapped = []
-        for r in rows:
-            if not _dv(r.get("number")): continue
-            mapped.append({
-                "number": _dv(r.get("number")), "short_description": _dv(r.get("short_description")) or "(no title)",
-                "description": _dv(r.get("description"))[:4000], "application": _dv(r.get("cmdb_ci")),
-                "priority": (_dv(r.get("priority")) or "3")[:1], "resolution": _dv(r.get("close_notes")),
-                "root_cause": _dv(r.get("close_code")), "resolved_at": _dv(r.get("resolved_at")) or _dv(r.get("closed_at")),
-                "tags": [t for t in [f"category:{_dv(r.get('category'))}" if _dv(r.get("category")) else "", "source:servicenow-sync"] if t],
-            })
-        result["fetched"] = len(rows)
-        if mapped:
-            imp = await _bulk_import("historical", mapped, {"email": sc.get("sync_user_email") or "system"})
-            result["inserted"], result["updated"] = imp["inserted"], imp["updated"]
-        result["ok"] = True
+        await _sync_resolved(sc, await _sn_cfg(), result)
     except HTTPException as e:
         result["error"] = e.detail
     except Exception as e:
@@ -618,41 +623,44 @@ def _top(items: List[Dict[str, Any]], limit: int = 5) -> List[Dict[str, Any]]:
     floor = max(4, ranked[0]["_score"] * 0.5)
     return [i for i in ranked if i["_score"] >= floor][:limit]
 
-async def _build_context(inc: Dict[str, Any]) -> Dict[str, Any]:
-    short = inc.get("short_description","")
-    desc = inc.get("description","")
-    ci = inc.get("cmdb_ci","") if isinstance(inc.get("cmdb_ci"), str) else (inc.get("cmdb_ci") or {}).get("display_value","") if isinstance(inc.get("cmdb_ci"), dict) else ""
-    toks = _tokens(short, desc, ci)
-    hist = await db.historical_incidents.find({}, {"_id": 0}).to_list(20000)
-    for h in hist:
-        h["_score"] = _score(f"{h.get('description','')} {h.get('root_cause','')} {h.get('resolution','')} {' '.join(h.get('tags',[]))}", toks,
-                             f"{h.get('short_description','')} {h.get('application','')}")
-    hist = _top(hist)
+def _incident_tokens(inc: Dict[str, Any]) -> List[str]:
+    ci = inc.get("cmdb_ci")
+    ci_txt = ci if isinstance(ci, str) else (ci or {}).get("display_value", "") if isinstance(ci, dict) else ""
+    return _tokens(inc.get("short_description", ""), inc.get("description", ""), ci_txt)
 
-    kbs = await db.kb_articles.find({}, {"_id": 0}).to_list(20000)
-    for k in kbs:
-        k["_score"] = _score(f"{k.get('content','')[:4000]} {' '.join(k.get('tags',[]))}", toks, f"{k.get('title','')} {k.get('application','')}")
-    kbs = _top(kbs)
-    for k in kbs:
-        if len(k.get("content", "")) > 3000: k["content"] = k["content"][:3000] + " …"
+async def _rank_source(collection: str, toks: List[str], body_fn, primary_fn) -> List[Dict[str, Any]]:
+    docs = await db[collection].find({}, {"_id": 0}).to_list(20000)
+    for d in docs:
+        d["_score"] = _score(body_fn(d), toks, primary_fn(d))
+    return _top(docs)
 
-    rcas = await db.rcas.find({}, {"_id": 0}).to_list(20000)
-    for r in rcas:
-        r["_score"] = _score(f"{r.get('root_cause','')} {r.get('resolution','')} {' '.join(r.get('tags',[]))}", toks, f"{r.get('title','')} {r.get('application','')}")
-    rcas = _top(rcas)
-
+async def _rank_feedback(toks: List[str]) -> List[Dict[str, Any]]:
     fb = await db.analyses.find({"feedback": {"$ne": None}}, {"_id": 0}).sort("created_at", -1).to_list(500)
     for f in fb:
         f["_score"] = _score(f"{f.get('incident_short_description','')} {f.get('feedback',{}).get('comment','')}", toks)
     fb = [f for f in sorted(fb, key=lambda x: x["_score"], reverse=True) if f["_score"] > 0][:3]
-    feedback = [{
+    return [{
         "incident": f.get("incident_number"),
         "analyst_rating": "helpful" if f["feedback"].get("rating") == "up" else "not helpful",
         "analyst_comment": f["feedback"].get("comment", ""),
         "previous_ai_root_cause": (f.get("result") or {}).get("likely_root_cause", ""),
     } for f in fb]
 
-    return {"historical": hist, "kb": kbs, "rcas": rcas, "feedback": feedback}
+async def _build_context(inc: Dict[str, Any]) -> Dict[str, Any]:
+    toks = _incident_tokens(inc)
+    tags = lambda d: " ".join(d.get("tags", []))
+    hist = await _rank_source("historical_incidents", toks,
+        lambda h: f"{h.get('description','')} {h.get('root_cause','')} {h.get('resolution','')} {tags(h)}",
+        lambda h: f"{h.get('short_description','')} {h.get('application','')}")
+    kbs = await _rank_source("kb_articles", toks,
+        lambda k: f"{k.get('content','')[:4000]} {tags(k)}",
+        lambda k: f"{k.get('title','')} {k.get('application','')}")
+    for k in kbs:
+        if len(k.get("content", "")) > 3000: k["content"] = k["content"][:3000] + " …"
+    rcas = await _rank_source("rcas", toks,
+        lambda r: f"{r.get('root_cause','')} {r.get('resolution','')} {tags(r)}",
+        lambda r: f"{r.get('title','')} {r.get('application','')}")
+    return {"historical": hist, "kb": kbs, "rcas": rcas, "feedback": await _rank_feedback(toks)}
 
 async def _check_rate_limit(user: Dict[str, Any], ai_cfg: AIConfig):
     if user.get("role") == "admin" or ai_cfg.rate_limit_per_hour <= 0:
@@ -674,114 +682,100 @@ async def my_quota(request: Request):
     used = await db.analyses.count_documents({"user_email": user["email"], "status": "success", "created_at": {"$gte": since}})
     return {"limit": ai_cfg.rate_limit_per_hour, "used": used, "remaining": max(0, ai_cfg.rate_limit_per_hour - used)}
 
-@api.post("/incidents/{sys_id}/analyze")
-async def analyze(sys_id: str, request: Request):
-    user = await require_user(request)
-    cfg = await _sn_cfg()
-    if not re.match(r"^[a-zA-Z0-9_\-]+$", sys_id):
-        raise HTTPException(status_code=400, detail="Invalid incident id")
-    ai_cfg = await _ai_cfg()
-    await _check_rate_limit(user, ai_cfg)
-    inc = await _fetch_incident(user, cfg, sys_id)
+ANALYSIS_SYSTEM_PROMPT = (
+    "You are an expert SRE / production support analyst for a large bank. "
+    "Given a live incident and internal knowledge, produce a rigorous, sober analysis. "
+    "Return STRICT JSON only, with keys: likely_root_cause, business_impact, "
+    "recommended_immediate_action, preventive_action, confidence (one of High/Medium/Low), "
+    "confidence_explanation. Each value is plain text (not markdown). "
+    "Root cause must clearly say it is AI-assisted and should be validated with logs/telemetry. "
+    "PRIORITY RULE: when an INTERNAL HISTORICAL INCIDENT, KB article or RCA closely matches the current incident, "
+    "quote its resolution / runbook steps EXACTLY (verbatim) in recommended_immediate_action and cite the source "
+    "(e.g. 'per INC001' or 'per KB: <title>'). Prefer proven internal resolutions over generic advice; only fall back to "
+    "generic guidance when nothing internal matches, and say so. "
+    "If PAST ANALYST FEEDBACK is provided, treat 'not helpful' items as corrections: avoid repeating those "
+    "conclusions and incorporate the analyst comments."
+)
+SUMMARY_FIELDS = ["number", "short_description", "description", "category", "subcategory", "priority", "impact", "urgency", "assignment_group", "state"]
 
-    ctx = await _build_context(inc)
+def _incident_summary(inc: Dict[str, Any]) -> Dict[str, str]:
+    out = {f: _dv(inc.get(f)) for f in SUMMARY_FIELDS}
+    out["application"] = _dv(inc.get("cmdb_ci"))
+    return out
 
-    def _val(x):
-        if isinstance(x, dict): return x.get("display_value","")
-        return x or ""
+def _strip_scores(items: List[Dict[str, Any]]) -> str:
+    return json.dumps([{k: v for k, v in i.items() if k != "_score"} for i in items], indent=2) or "None"
 
-    incident_summary = {
-        "number": _val(inc.get("number")),
-        "short_description": _val(inc.get("short_description")),
-        "description": _val(inc.get("description")),
-        "application": _val(inc.get("cmdb_ci")),
-        "category": _val(inc.get("category")),
-        "subcategory": _val(inc.get("subcategory")),
-        "priority": _val(inc.get("priority")),
-        "impact": _val(inc.get("impact")),
-        "urgency": _val(inc.get("urgency")),
-        "assignment_group": _val(inc.get("assignment_group")),
-        "state": _val(inc.get("state")),
+def _analysis_prompt(summary: Dict[str, str], ctx: Dict[str, Any]) -> str:
+    return "\n".join([
+        "### CURRENT INCIDENT", json.dumps(summary, indent=2),
+        "\n### INTERNAL HISTORICAL INCIDENTS (top matches)", _strip_scores(ctx["historical"]),
+        "\n### INTERNAL KNOWLEDGE BASE (top matches)", _strip_scores(ctx["kb"]),
+        "\n### INTERNAL RCA REPOSITORY (top matches)", _strip_scores(ctx["rcas"]),
+        "\n### PAST ANALYST FEEDBACK ON SIMILAR ANALYSES", json.dumps(ctx["feedback"], indent=2) if ctx["feedback"] else "None",
+        "\nReturn STRICT JSON only. No prose outside JSON.",
+    ])
+
+def _parse_ai_json(raw: str) -> Dict[str, Any]:
+    m = re.search(r"\{[\s\S]*\}", raw)
+    if not m: raise ValueError("No JSON in AI response")
+    return json.loads(m.group(0))
+
+async def _ai_analysis(user_msg: str, ai_cfg: AIConfig) -> Dict[str, Any]:
+    try:
+        return _parse_ai_json(await _run_llm(ANALYSIS_SYSTEM_PROMPT, user_msg, ai_cfg))
+    except (ValueError, json.JSONDecodeError):
+        logger.warning("AI output truncated/invalid JSON — retrying with larger output budget")
+        return _parse_ai_json(await _run_llm(ANALYSIS_SYSTEM_PROMPT, user_msg, ai_cfg, max_tokens=8000))
+
+def _fallback_analysis(ai_error: str) -> Dict[str, Any]:
+    return {
+        "likely_root_cause": f"AI analysis unavailable: {ai_error}",
+        "business_impact": "Unable to determine automatically. Review incident and dependencies manually.",
+        "recommended_immediate_action": "Engage on-call SRE for the affected application and check recent deployments/telemetry.",
+        "preventive_action": "Ensure AI configuration is valid and re-run analysis once resolved.",
+        "confidence": "Low",
+        "confidence_explanation": "AI service could not produce a structured response.",
     }
 
-    system_msg = (
-        "You are an expert SRE / production support analyst for a large bank. "
-        "Given a live incident and internal knowledge, produce a rigorous, sober analysis. "
-        "Return STRICT JSON only, with keys: likely_root_cause, business_impact, "
-        "recommended_immediate_action, preventive_action, confidence (one of High/Medium/Low), "
-        "confidence_explanation. Each value is plain text (not markdown). "
-        "Root cause must clearly say it is AI-assisted and should be validated with logs/telemetry. "
-        "PRIORITY RULE: when an INTERNAL HISTORICAL INCIDENT, KB article or RCA closely matches the current incident, "
-        "quote its resolution / runbook steps EXACTLY (verbatim) in recommended_immediate_action and cite the source "
-        "(e.g. 'per INC001' or 'per KB: <title>'). Prefer proven internal resolutions over generic advice; only fall back to "
-        "generic guidance when nothing internal matches, and say so. "
-        "If PAST ANALYST FEEDBACK is provided, treat 'not helpful' items as corrections: avoid repeating those "
-        "conclusions and incorporate the analyst comments."
-    )
-
-    parts = [
-        "### CURRENT INCIDENT",
-        json.dumps(incident_summary, indent=2),
-        "\n### INTERNAL HISTORICAL INCIDENTS (top matches)",
-        json.dumps([{k:v for k,v in h.items() if k!='_score'} for h in ctx["historical"]], indent=2) or "None",
-        "\n### INTERNAL KNOWLEDGE BASE (top matches)",
-        json.dumps([{k:v for k,v in k2.items() if k!='_score'} for k2 in ctx["kb"]], indent=2) or "None",
-        "\n### INTERNAL RCA REPOSITORY (top matches)",
-        json.dumps([{k:v for k,v in r.items() if k!='_score'} for r in ctx["rcas"]], indent=2) or "None",
-        "\n### PAST ANALYST FEEDBACK ON SIMILAR ANALYSES",
-        json.dumps(ctx["feedback"], indent=2) if ctx["feedback"] else "None",
-        "\nReturn STRICT JSON only. No prose outside JSON."
-    ]
-    user_msg = "\n".join(parts)
-
-    status = "success"
-    parsed: Dict[str, Any] = {}
-    ai_error = ""
-    def _parse(raw: str) -> Dict[str, Any]:
-        m = re.search(r"\{[\s\S]*\}", raw)
-        if not m: raise ValueError("No JSON in AI response")
-        return json.loads(m.group(0))
-    try:
-        try:
-            parsed = _parse(await _run_llm(system_msg, user_msg, ai_cfg))
-        except (ValueError, json.JSONDecodeError):
-            logger.warning("AI output truncated/invalid JSON — retrying with larger output budget")
-            parsed = _parse(await _run_llm(system_msg, user_msg, ai_cfg, max_tokens=8000))
-    except Exception as e:
-        status = "error"
-        logger.exception("AI analyze failed")
-        ai_error = _friendly_ai_error(e, ai_cfg)
-        parsed = {
-            "likely_root_cause": f"AI analysis unavailable: {ai_error}",
-            "business_impact": "Unable to determine automatically. Review incident and dependencies manually.",
-            "recommended_immediate_action": "Engage on-call SRE for the affected application and check recent deployments/telemetry.",
-            "preventive_action": "Ensure AI configuration is valid and re-run analysis once resolved.",
-            "confidence": "Low",
-            "confidence_explanation": "AI service could not produce a structured response.",
-        }
-
-    evidence = {
+def _evidence(ctx: Dict[str, Any]) -> Dict[str, Any]:
+    return {
         "historical": [{"id": h["id"], "number": h.get("number"), "title": h.get("short_description", ""), "application": h.get("application", ""), "score": h["_score"]} for h in ctx["historical"]],
         "kb": [{"id": k["id"], "title": k.get("title", ""), "application": k.get("application", ""), "score": k["_score"]} for k in ctx["kb"]],
         "rca": [{"id": r["id"], "title": r.get("title", ""), "incident_number": r.get("incident_number", ""), "application": r.get("application", ""), "score": r["_score"]} for r in ctx["rcas"]],
     }
+
+@api.post("/incidents/{sys_id}/analyze")
+async def analyze(sys_id: str, request: Request):
+    user = await require_user(request)
+    if not re.match(r"^[a-zA-Z0-9_\-]+$", sys_id):
+        raise HTTPException(status_code=400, detail="Invalid incident id")
+    ai_cfg = await _ai_cfg()
+    await _check_rate_limit(user, ai_cfg)
+    inc = await _fetch_incident(user, await _sn_cfg(), sys_id)
+    ctx = await _build_context(inc)
+    summary = _incident_summary(inc)
+
+    status, ai_error = "success", ""
+    try:
+        parsed = await _ai_analysis(_analysis_prompt(summary, ctx), ai_cfg)
+    except Exception as e:
+        logger.exception("AI analyze failed")
+        status, ai_error = "error", _friendly_ai_error(e, ai_cfg)
+        parsed = _fallback_analysis(ai_error)
+
+    evidence = _evidence(ctx)
     record = AnalysisRecord(
-        incident_number=incident_summary["number"] or sys_id,
-        incident_sys_id=sys_id,
-        incident_short_description=incident_summary["short_description"],
-        application=incident_summary["application"],
-        user_email=user["email"],
-        model=f"{ai_cfg.provider}/{ai_cfg.model}",
-        confidence=str(parsed.get("confidence","Medium")),
-        status=status,
-        result=parsed,
-        evidence=evidence,
+        incident_number=summary["number"] or sys_id, incident_sys_id=sys_id,
+        incident_short_description=summary["short_description"], application=summary["application"],
+        user_email=user["email"], model=f"{ai_cfg.provider}/{ai_cfg.model}",
+        confidence=str(parsed.get("confidence", "Medium")), status=status, result=parsed, evidence=evidence,
     )
     await db.analyses.insert_one(record.model_dump())
-    await audit("incident.analyze", user["email"], {"incident": incident_summary["number"], "status": status})
+    await audit("incident.analyze", user["email"], {"incident": summary["number"], "status": status})
     if status == "error":
         raise HTTPException(status_code=424, detail=ai_error)
-    return {"analysis": parsed, "analysis_id": record.id, "incident_number": incident_summary["number"], "model": record.model, "evidence": evidence}
+    return {"analysis": parsed, "analysis_id": record.id, "incident_number": summary["number"], "model": record.model, "evidence": evidence}
 
 EVIDENCE_COLLECTIONS = {"historical": "historical_incidents", "kb": "kb_articles", "rca": "rcas"}
 
@@ -1019,28 +1013,37 @@ def _parse_import_payload(filename: str, data: bytes) -> List[Dict[str, Any]]:
         return [parsed]
     return parsed if isinstance(parsed, list) else []
 
-def _map_row(row: Dict[str, Any], spec: Dict[str, Any]) -> Dict[str, Any]:
-    low = {str(k).strip().lower(): v for k, v in row.items()}
+TAG_EXTRAS = ("confidence", "category", "subcategory", "assignment_group", "state")
+
+def _pick_aliases(low: Dict[str, Any], aliases: Dict[str, List[str]]) -> Dict[str, Any]:
     out: Dict[str, Any] = {}
-    for field, names in spec["aliases"].items():
-        for n in names:
-            if n in low and low[n] not in (None, ""):
-                out[field] = low[n]; break
-    extras = {k: v for k, v in low.items() if k not in {n for ns in spec["aliases"].values() for n in ns} and v not in (None, "")}
-    tags = out.get("tags", [])
+    for field, names in aliases.items():
+        val = next((low[n] for n in names if low.get(n) not in (None, "")), None)
+        if val is not None: out[field] = val
+    return out
+
+def _build_tags(raw_tags: Any, low: Dict[str, Any], aliases: Dict[str, List[str]]) -> List[str]:
+    tags = raw_tags or []
     if isinstance(tags, str): tags = [t.strip() for t in re.split(r"[,;|]", tags) if t.strip()]
-    for k, v in extras.items():
-        if k in ("confidence", "category", "subcategory", "assignment_group", "state"):
-            tags.append(f"{k}:{v}")
-    out["tags"] = [str(t) for t in tags]
+    known = {n for ns in aliases.values() for n in ns}
+    extras = [f"{k}:{v}" for k, v in low.items() if k in TAG_EXTRAS and k not in known and v not in (None, "")]
+    return [str(t) for t in list(tags) + extras]
+
+def _finalize_row(out: Dict[str, Any], model_cls) -> Dict[str, Any]:
     if "priority" in out: out["priority"] = str(out["priority"])
-    if spec["model"] is HistoricalIncident:
+    if model_cls is HistoricalIncident:
         out.setdefault("short_description", out.get("description", ""))
         if out.get("description") == out.get("short_description"): out["description"] = ""
         out["number"] = str(out.get("number", "")).strip()
-    if spec["model"] is RCA and not out.get("title"):
+    if model_cls is RCA and not out.get("title"):
         out["title"] = f"RCA - {out.get('incident_number') or out.get('application') or 'imported'}"
     return out
+
+def _map_row(row: Dict[str, Any], spec: Dict[str, Any]) -> Dict[str, Any]:
+    low = {str(k).strip().lower(): v for k, v in row.items()}
+    out = _pick_aliases(low, spec["aliases"])
+    out["tags"] = _build_tags(out.get("tags"), low, spec["aliases"])
+    return _finalize_row(out, spec["model"])
 
 MAX_IMPORT_ROWS = 20000
 

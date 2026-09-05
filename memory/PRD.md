@@ -55,6 +55,8 @@ Build a production-ready AI Incident Analyzer web app that integrates ServiceNow
 
 - 2026-09-05: v1.4.1 — AI model fix. Google retired gemini-2.5-flash for new API keys (owner uses own Gemini key). Model lists updated to current (gemini-3-flash-preview default, gpt-5.4, claude-sonnet-4-6…); PUT ai/config auto-upgrades retired models for BYOK (`upgraded_from`); analyze returns 424 with friendly message on AI failure (record kept as status=error); 4000-token output floor + retry at 8000 for reasoning models. NOTE: owner's Gemini key is Google free tier (20 req/day/model) — recommend Universal Key or paid key for production.
 
+- 2026-09-05: v1.4.2 — Code-quality pass from review (testing agent regression: 9/9 new + 139/140, brittle test fixed). Backend: analyze/_build_context/_run_resolved_sync/_map_row split into small helpers; test tokens moved to backend/.env (TEST_ADMIN_SESSION_TOKEN, TEST_END_USER_SESSION_TOKEN) read by conftest. Frontend: IncidentDetail → hooks/useIncident.js + components/incident/{IncidentHeader,AnalysisResult}.jsx; OpenIncidents → useIncidentList + components/incident/IncidentTable.jsx; credentials dialog + sync panel split with hooks; AuthContext memoized; CRUD routes in lib/crudPages.js; shared lib/format.js; empty catches now log/toast; chart config constants.
+
 ## Deferred / Backlog
 - P2: KB upload de-duplication by source_file; stream size check before buffering
 - P2: Vector-based semantic RAG (embeddings)

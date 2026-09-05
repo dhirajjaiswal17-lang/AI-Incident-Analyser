@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useState, useCallback } from "react";
+import React, { createContext, useContext, useEffect, useState, useCallback, useMemo } from "react";
 import { authApi } from "@/lib/api";
 
 const AuthCtx = createContext(null);
@@ -9,9 +9,9 @@ export function AuthProvider({ children }) {
 
   const refresh = useCallback(async () => {
     try {
-      const me = await authApi.me();
-      setUser(me);
-    } catch {
+      setUser(await authApi.me());
+    } catch (error) {
+      if (error?.response?.status !== 401) console.error("Auth refresh failed:", error);
       setUser(null);
     } finally {
       setLoading(false);
@@ -19,8 +19,7 @@ export function AuthProvider({ children }) {
   }, []);
 
   useEffect(() => {
-    // CRITICAL: If returning from OAuth callback, skip /me check.
-    // AuthCallback will exchange the session_id first.
+    // Returning from OAuth callback: AuthCallback exchanges the session_id first, skip /me.
     if (window.location.hash?.includes("session_id=")) {
       setLoading(false);
       return;
@@ -28,16 +27,18 @@ export function AuthProvider({ children }) {
     refresh();
   }, [refresh]);
 
-  const logout = async () => {
-    try { await authApi.logout(); } catch (_) {}
+  const logout = useCallback(async () => {
+    try {
+      await authApi.logout();
+    } catch (error) {
+      console.error("Logout request failed (session cleared locally):", error);
+    }
     setUser(null);
-  };
+  }, []);
 
-  return (
-    <AuthCtx.Provider value={{ user, setUser, loading, refresh, logout }}>
-      {children}
-    </AuthCtx.Provider>
-  );
+  const value = useMemo(() => ({ user, setUser, loading, refresh, logout }), [user, loading, refresh, logout]);
+
+  return <AuthCtx.Provider value={value}>{children}</AuthCtx.Provider>;
 }
 
 export const useAuth = () => useContext(AuthCtx);

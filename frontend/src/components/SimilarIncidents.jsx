@@ -3,6 +3,7 @@ import { api } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
 import { History, BookOpen, ClipboardList, Radar, ChevronRight } from "lucide-react";
 import { EvidenceDialog } from "@/components/LinkedEvidence";
+import { toast } from "sonner";
 
 export function SimilarIncidents({ sysId }) {
   const [data, setData] = useState(null);
@@ -11,11 +12,15 @@ export function SimilarIncidents({ sysId }) {
 
   useEffect(() => {
     setData(null); setError(false);
-    api.get(`/incidents/${sysId}/similar`).then(r => setData(r.data)).catch(() => setError(true));
+    api.get(`/incidents/${sysId}/similar`).then(r => setData(r.data)).catch(e => {
+      setError(true);
+      if (e?.response?.status !== 428) console.error("Similar incidents lookup failed:", e);
+    });
   }, [sysId]);
 
   const show = async (kind, id) => {
-    try { const { data: doc } = await api.get(`/evidence/${kind}/${id}`); setOpen({ kind, doc }); } catch { /* toast handled globally */ }
+    try { const { data: doc } = await api.get(`/evidence/${kind}/${id}`); setOpen({ kind, doc }); }
+    catch (e) { toast.error(e?.response?.data?.detail || "Could not load record"); }
   };
 
   const total = data ? data.historical.length + data.kb.length + data.rca.length : 0;

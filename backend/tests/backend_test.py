@@ -154,7 +154,7 @@ class TestServiceNowConfig:
         assert r.status_code == 200, r.text
         d = r.json()
         assert d["table"] == "incident"
-        assert d["show_work_notes"] is False
+        assert not d["show_work_notes"]
         assert isinstance(d["fields"], list)
         # iteration 2: credentials are per-user, never part of admin config
         assert "password" not in d and "username" not in d
@@ -163,19 +163,19 @@ class TestServiceNowConfig:
         original = admin.get(f"{BASE_URL}/api/admin/servicenow/config").json()
         p = admin.put(f"{BASE_URL}/api/admin/servicenow/config", json={**original, "show_work_notes": True})
         assert p.status_code == 200, p.text
-        assert p.json()["show_work_notes"] is True
+        assert p.json()["show_work_notes"]
         assert "password" not in p.json()
         # restore
         back = admin.put(f"{BASE_URL}/api/admin/servicenow/config", json=original)
         assert back.status_code == 200
         assert back.json()["instance_url"] == original["instance_url"]
-        assert back.json()["show_work_notes"] is False
+        assert not back.json()["show_work_notes"]
 
     def test_test_connection_requires_personal_credentials(self, admin):
         r = admin.post(f"{BASE_URL}/api/admin/servicenow/test")
         assert r.status_code == 200, r.text
         d = r.json()
-        assert d["ok"] is False
+        assert not d["ok"]
         assert "credentials" in d["message"].lower() or "authentication" in d["message"].lower()
 
 
@@ -187,7 +187,7 @@ class TestAIConfig:
         d = r.json()
         assert d["provider"] == "openai"
         assert d["model"] == "gpt-4o-mini"
-        assert d["use_emergent_key"] is True
+        assert d["use_emergent_key"]
         assert d["api_key"] in ("", "\u2022" * 8)
 
     def test_put_ai_config(self, admin):
@@ -207,7 +207,7 @@ class TestAIConfig:
         r = admin.post(f"{BASE_URL}/api/admin/ai/test", timeout=120)
         assert r.status_code == 200, r.text
         d = r.json()
-        assert d["ok"] is True, d
+        assert d["ok"], d
         assert "PONG" in d.get("sample", "").upper()
 
 
@@ -258,7 +258,7 @@ class TestAdminCRUD:
             # DELETE
             d = admin.delete(f"{BASE_URL}/api/admin/{name}/{item_id}")
             assert d.status_code == 200, d.text
-            assert d.json()["ok"] is True
+            assert d.json()["ok"]
             items = admin.get(f"{BASE_URL}/api/admin/{name}").json()
             assert not [i for i in items if i["id"] == item_id], "delete not persisted"
 

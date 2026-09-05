@@ -4,13 +4,22 @@ import requests
 from dotenv import dotenv_values
 
 frontend_env = dotenv_values("/app/frontend/.env")
+backend_env = dotenv_values("/app/backend/.env")
 base_url = os.environ.get("REACT_APP_BACKEND_URL") or frontend_env.get("REACT_APP_BACKEND_URL")
 if not base_url:
     raise RuntimeError("REACT_APP_BACKEND_URL missing")
 BASE_URL = base_url.rstrip("/")
 
-ADMIN_TOKEN = "test_session_admin_001"
-END_USER_TOKEN = "test_session_end_001"
+
+def _secret(name: str) -> str:
+    value = os.environ.get(name) or backend_env.get(name)
+    if not value:
+        raise RuntimeError(f"{name} missing — set it in the environment or /app/backend/.env")
+    return value
+
+
+ADMIN_TOKEN = _secret("TEST_ADMIN_SESSION_TOKEN")
+END_USER_TOKEN = _secret("TEST_END_USER_SESSION_TOKEN")
 
 
 def _client(token=None):

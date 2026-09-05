@@ -21,8 +21,7 @@ backend_env = dotenv_values("/app/backend/.env")
 MONGO_URL = os.environ.get("MONGO_URL") or backend_env.get("MONGO_URL")
 DB_NAME = os.environ.get("DB_NAME") or backend_env.get("DB_NAME")
 
-ADMIN = "test_session_admin_001"
-END = "test_session_end_001"
+from conftest import ADMIN_TOKEN as ADMIN, END_USER_TOKEN as END
 
 REAL_INSTANCE = "https://dev414250.service-now.com"
 DEFAULT_FIELDS = ["number", "short_description", "description", "priority", "impact", "urgency",
@@ -126,9 +125,9 @@ class TestPerUserSNCredentials:
         d = r.json()
         for k in ("configured", "instance_url", "has_credentials", "username"):
             assert k in d
-        assert d["configured"] is True
+        assert d["configured"]
         assert d["instance_url"] == REAL_INSTANCE
-        assert d["has_credentials"] is False
+        assert not d["has_credentials"]
         assert d["username"] == ""
 
     def test_real_instance_no_creds_returns_428(self, admin):
@@ -144,7 +143,7 @@ class TestPerUserSNCredentials:
         r = admin.post(f"{BASE_URL}/api/admin/servicenow/test")
         assert r.status_code == 200
         d = r.json()
-        assert d["ok"] is False
+        assert not d["ok"]
         assert d["message"] == "ServiceNow credentials required"
 
     def test_save_validation(self, admin):
@@ -161,7 +160,7 @@ class TestPerUserSNCredentials:
         assert r.json() == {"ok": True, "username": "TEST_sn_user"}
 
         got = admin.get(f"{BASE_URL}/api/me/servicenow").json()
-        assert got["has_credentials"] is True
+        assert got["has_credentials"]
         assert got["username"] == "TEST_sn_user"
 
         admin_user = mongo.users.find_one({"email": "admin@test.local"})
@@ -175,7 +174,7 @@ class TestPerUserSNCredentials:
         r = admin.post(f"{BASE_URL}/api/me/servicenow/test")
         assert r.status_code == 200, r.text[:300]
         d = r.json()
-        assert d["ok"] is False
+        assert not d["ok"]
         assert isinstance(d["message"], str) and d["message"]
         assert "<html" not in d["message"].lower()
 
@@ -198,8 +197,8 @@ class TestPerUserSNCredentials:
 
     def test_delete_removes_credentials(self, admin, mongo):
         r = admin.delete(f"{BASE_URL}/api/me/servicenow")
-        assert r.status_code == 200 and r.json()["ok"] is True
-        assert admin.get(f"{BASE_URL}/api/me/servicenow").json()["has_credentials"] is False
+        assert r.status_code == 200 and r.json()["ok"]
+        assert not admin.get(f"{BASE_URL}/api/me/servicenow").json()["has_credentials"]
         admin_user = mongo.users.find_one({"email": "admin@test.local"})
         assert mongo.sn_credentials.find_one({"user_id": admin_user["user_id"]}) is None
         # 428 state restored
@@ -228,7 +227,7 @@ class TestDemoAnalyzeFeedbackQuota:
     def test_demo_mode_list(self, admin, enduser):
         set_sn(admin, "")
         d = enduser.get(f"{BASE_URL}/api/incidents").json()
-        assert d["demo"] is True
+        assert d["demo"]
         assert d["total"] == 8 and len(d["items"]) == 8
 
     def test_quota_shapes(self, admin, enduser):
@@ -274,7 +273,7 @@ class TestDemoAnalyzeFeedbackQuota:
                           json={"rating": "down", "comment": "TEST_not helpful"})
         assert ok.status_code == 200
         fb = ok.json()["feedback"]
-        assert ok.json()["ok"] is True
+        assert ok.json()["ok"]
         assert fb["rating"] == "down"
         assert fb["comment"] == "TEST_not helpful"
         assert fb["by"] == "user@test.local"
@@ -314,7 +313,7 @@ class TestDemoAnalyzeFeedbackQuota:
         out = set_sn(admin, REAL_INSTANCE)
         assert out["instance_url"] == REAL_INSTANCE
         assert out["table"] == "incident"
-        assert out["show_work_notes"] is False
+        assert not out["show_work_notes"]
         assert out["active_query"] == "active=true^stateNOT IN6,7,8"
         assert out["fields"] == DEFAULT_FIELDS
 
@@ -436,4 +435,4 @@ class TestRegression:
     def test_ai_test_pong(self, admin):
         r = admin.post(f"{BASE_URL}/api/admin/ai/test", timeout=90)
         assert r.status_code == 200
-        assert r.json()["ok"] is True, r.text[:300]
+        assert r.json()["ok"], r.text[:300]

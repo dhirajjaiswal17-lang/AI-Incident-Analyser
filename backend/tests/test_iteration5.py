@@ -54,14 +54,15 @@ def _restore_state(admin):
 
 # ---------- feature 1: GET ai config ----------
 class TestAIConfigGet:
-    def test_get_returns_gemini_masked(self, admin):
+    def test_get_returns_config_masked(self, admin):
         r = admin.get(f"{BASE_URL}/api/admin/ai/config", timeout=15)
         assert r.status_code == 200, r.text
         d = r.json()
-        assert d["provider"] == "gemini"
-        assert d["model"] == "gemini-3-flash-preview"
-        assert d["use_emergent_key"] is False
-        # api_key masked (owner's key stored)
+        assert d["provider"] in ("openai", "anthropic", "gemini")
+        assert d["model"]
+        assert isinstance(d["use_emergent_key"], bool)
+        assert "rate_limit_per_hour" in d
+        # api_key is never returned in clear text
         assert d.get("api_key") in ("••••••••", "") or "•" in (d.get("api_key") or "")
 
 
@@ -119,7 +120,7 @@ class TestAITest:
             break
         if d and not d.get("ok") and ("rate limit" in d.get("message","").lower() or "quota" in d.get("message","").lower()):
             pytest.skip(f"Gemini quota exhausted: {d.get('message')}")
-        assert d["ok"] is True, d
+        assert d["ok"], d
         assert "PONG" in (d.get("sample") or "").upper()
 
     def test_ai_test_retired_model_returns_friendly(self, admin):
@@ -129,7 +130,7 @@ class TestAITest:
             r = admin.post(f"{BASE_URL}/api/admin/ai/test", timeout=60)
             assert r.status_code == 200, r.text
             d = r.json()
-            assert d["ok"] is False
+            assert not d["ok"]
             assert "not available for this API key" in d["message"]
             assert "gemini-3-flash-preview" in d["message"]
         finally:

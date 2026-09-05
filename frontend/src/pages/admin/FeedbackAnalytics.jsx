@@ -5,6 +5,12 @@ import { BarChart3, ThumbsUp, ThumbsDown, Target, AlertOctagon } from "lucide-re
 import { ResponsiveContainer, ComposedChart, Bar, Line, XAxis, YAxis, Tooltip, CartesianGrid } from "recharts";
 
 const RANGES = [7, 30, 90];
+const CHART_MARGIN = { top: 5, right: 10, left: -20, bottom: 0 };
+const AXIS_TICK = { fill: "#64748b", fontSize: 10 };
+const RATE_DOMAIN = [0, 100];
+const TOOLTIP_STYLE = { background: "#0f172a", border: "1px solid #1e293b", fontSize: 12 };
+const TOOLTIP_LABEL = { color: "#cbd5e1" };
+const shortDate = (d) => d.slice(5);
 
 export default function FeedbackAnalytics() {
   const [days, setDays] = useState(30);
@@ -41,12 +47,12 @@ export default function FeedbackAnalytics() {
             <div className="text-[10px] uppercase tracking-[0.2em] text-slate-500 font-semibold">Daily trend — rated volume &amp; helpful rate</div>
             <div className="mt-4 h-56 min-h-[224px] w-full">
               <ResponsiveContainer width="100%" height={224} minWidth={0}>
-                <ComposedChart data={data.trend} margin={{ top: 5, right: 10, left: -20, bottom: 0 }}>
+                <ComposedChart data={data.trend} margin={CHART_MARGIN}>
                   <CartesianGrid stroke="#1e293b" vertical={false} />
-                  <XAxis dataKey="date" tick={{ fill: "#64748b", fontSize: 10 }} tickFormatter={d => d.slice(5)} interval="preserveStartEnd" />
-                  <YAxis yAxisId="l" tick={{ fill: "#64748b", fontSize: 10 }} allowDecimals={false} />
-                  <YAxis yAxisId="r" orientation="right" domain={[0, 100]} tick={{ fill: "#64748b", fontSize: 10 }} />
-                  <Tooltip contentStyle={{ background: "#0f172a", border: "1px solid #1e293b", fontSize: 12 }} labelStyle={{ color: "#cbd5e1" }} />
+                  <XAxis dataKey="date" tick={AXIS_TICK} tickFormatter={shortDate} interval="preserveStartEnd" />
+                  <YAxis yAxisId="l" tick={AXIS_TICK} allowDecimals={false} />
+                  <YAxis yAxisId="r" orientation="right" domain={RATE_DOMAIN} tick={AXIS_TICK} />
+                  <Tooltip contentStyle={TOOLTIP_STYLE} labelStyle={TOOLTIP_LABEL} />
                   <Bar yAxisId="l" dataKey="up" stackId="a" fill="#10b981" name="Helpful" />
                   <Bar yAxisId="l" dataKey="total" stackId="b" fill="#334155" name="Rated" opacity={0.35} />
                   <Line yAxisId="r" type="monotone" dataKey="rate" stroke="#22d3ee" strokeWidth={2} dot={false} connectNulls name="Helpful %" />

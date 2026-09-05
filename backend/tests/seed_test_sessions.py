@@ -7,8 +7,8 @@ from motor.motor_asyncio import AsyncIOMotorClient
 load_dotenv("/app/backend/.env")
 
 SESSIONS = [
-    ("admin@test.local", "test_session_admin_001"),
-    ("user@test.local", "test_session_end_001"),
+    ("admin@test.local", os.environ["TEST_ADMIN_SESSION_TOKEN"]),
+    ("user@test.local", os.environ["TEST_END_USER_SESSION_TOKEN"]),
 ]
 
 

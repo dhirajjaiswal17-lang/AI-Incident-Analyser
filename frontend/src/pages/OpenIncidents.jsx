@@ -1,74 +1,61 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "@/lib/api";
 import { useNavigate } from "react-router-dom";
-import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
-import { RefreshCw, Search, Activity, ChevronLeft, ChevronRight, KeyRound } from "lucide-react";
+import { RefreshCw, Activity } from "lucide-react";
 import { toast } from "sonner";
-import { openSNCredentials, SN_CREDS_SAVED } from "@/components/ServiceNowCredentialsDialog";
+import { SN_CREDS_SAVED } from "@/components/ServiceNowCredentialsDialog";
+import { IncidentFilters, CredentialsBanner, IncidentTable, Pagination } from "@/components/incident/IncidentTable";
+import { val } from "@/lib/format";
 
-function priorityBadge(p) {
-  const s = String(p || "").toLowerCase();
-  if (s.includes("1") || s.includes("critical")) return "bg-rose-500/15 text-rose-300 border-rose-500/40";
-  if (s.includes("2") || s.includes("high")) return "bg-orange-500/15 text-orange-300 border-orange-500/40";
-  if (s.includes("3") || s.includes("moderate")) return "bg-amber-500/15 text-amber-300 border-amber-500/40";
-  return "bg-emerald-500/15 text-emerald-300 border-emerald-500/40";
-}
+const PAGE_SIZE = 25;
 
-function val(v) {
-  if (v == null) return "";
-  if (typeof v === "object") return v.display_value || v.value || "";
-  return String(v);
+function useIncidentList() {
+  const [state, setState] = useState({ items: [], total: 0, demo: false, loading: true, needCreds: false });
+  const [page, setPage] = useState(1);
+  const [query, setQuery] = useState("");
+  const submittedQuery = useRef("");
+
+  const load = useCallback(async (p) => {
+    setState(s => ({ ...s, loading: true, needCreds: false }));
+    try {
+      const { data } = await api.get("/incidents", { params: { q: submittedQuery.current || undefined, page: p, page_size: PAGE_SIZE } });
+      setState({ items: data.items || [], total: data.total || 0, demo: !!data.demo, loading: false, needCreds: false });
+    } catch (e) {
+      const status = e?.response?.status;
+      const msg = e?.response?.data?.detail || "Failed to load incidents";
+      const needCreds = status === 428 || (status === 424 && msg.toLowerCase().includes("authentication"));
+      if (status !== 428) toast.error(msg, { duration: status === 424 ? 8000 : 4000 });
+      setState(s => ({ ...s, items: [], total: 0, loading: false, needCreds }));
+    }
+  }, []);
+
+  useEffect(() => {
+    load(page);
+    const onSaved = () => load(page);
+    window.addEventListener(SN_CREDS_SAVED, onSaved);
+    return () => window.removeEventListener(SN_CREDS_SAVED, onSaved);
+  }, [page, load]);
+
+  const search = useCallback(() => {
+    submittedQuery.current = query;
+    if (page === 1) load(1); else setPage(1);
+  }, [query, page, load]);
+
+  return { ...state, page, setPage, query, setQuery, search, refresh: () => load(page) };
 }
 
 export default function OpenIncidents() {
-  const [items, setItems] = useState([]);
-  const [total, setTotal] = useState(0);
-  const [page, setPage] = useState(1);
-  const [pageSize] = useState(25);
-  const [query, setQuery] = useState("");
-  const [loading, setLoading] = useState(true);
-  const [demo, setDemo] = useState(false);
-  const [priorityFilter, setPriorityFilter] = useState("all");
-  const [needCreds, setNeedCreds] = useState(false);
   const nav = useNavigate();
+  const { items, total, demo, loading, needCreds, page, setPage, query, setQuery, search, refresh } = useIncidentList();
+  const [priorityFilter, setPriorityFilter] = useState("all");
 
-  const load = async (q = query, p = page) => {
-    setLoading(true); setNeedCreds(false);
-    try {
-      const { data } = await api.get("/incidents", { params: { q: q || undefined, page: p, page_size: pageSize } });
-      setItems(data.items || []);
-      setTotal(data.total || 0);
-      setDemo(!!data.demo);
-    } catch (e) {
-      if (e?.response?.status === 428) { setNeedCreds(true); setItems([]); setTotal(0); }
-      else if (e?.response?.status === 424) {
-        setItems([]); setTotal(0);
-        const msg = e.response.data?.detail || "ServiceNow error";
-        if (msg.toLowerCase().includes("authentication")) setNeedCreds(true);
-        toast.error(msg, { duration: 8000 });
-      }
-      else toast.error(e?.response?.data?.detail || "Failed to load incidents");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    load();
-    const onSaved = () => load();
-    window.addEventListener(SN_CREDS_SAVED, onSaved);
-    return () => window.removeEventListener(SN_CREDS_SAVED, onSaved);
-    /* eslint-disable-next-line */
-  }, [page]);
-
-  const filtered = useMemo(() => {
-    if (priorityFilter === "all") return items;
-    return items.filter((i) => val(i.priority).startsWith(priorityFilter));
-  }, [items, priorityFilter]);
-
-  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const filtered = useMemo(
+    () => (priorityFilter === "all" ? items : items.filter((i) => val(i.priority).startsWith(priorityFilter))),
+    [items, priorityFilter]
+  );
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const open = useCallback((sysId) => nav(`/incidents/${sysId}`), [nav]);
 
   return (
     <div className="p-6 lg:p-8 max-w-[1400px] mx-auto">
@@ -76,123 +63,25 @@ export default function OpenIncidents() {
         <div>
           <div className="text-xs uppercase tracking-[0.2em] text-slate-400">Live Feed</div>
           <h1 className="mt-1 text-3xl lg:text-4xl font-extrabold tracking-tight flex items-center gap-3">
-            <Activity className="h-7 w-7 text-cyan-400" />
-            Open / Active Incidents
+            <Activity className="h-7 w-7 text-cyan-400" /> Open / Active Incidents
           </h1>
           <p className="mt-2 text-sm text-slate-400">
             Server-side paginated. {demo && <span className="ml-1 text-cyan-400">Demo dataset — connect ServiceNow in Admin → ServiceNow.</span>}
           </p>
         </div>
-        <div className="flex items-center gap-2">
-          <Button variant="outline" data-testid="refresh-btn" onClick={() => load()} className="border-slate-700 bg-slate-900 text-slate-200 hover:bg-slate-800">
-            <RefreshCw className={`h-4 w-4 mr-2 ${loading ? "animate-spin" : ""}`} /> Refresh
-          </Button>
-        </div>
+        <Button variant="outline" data-testid="refresh-btn" onClick={refresh} className="border-slate-700 bg-slate-900 text-slate-200 hover:bg-slate-800">
+          <RefreshCw className={`h-4 w-4 mr-2 ${loading ? "animate-spin" : ""}`} /> Refresh
+        </Button>
       </div>
 
-      <div className="mt-6 flex items-center gap-3 flex-wrap">
-        <div className="relative flex-1 min-w-[280px] max-w-xl">
-          <Search className="h-4 w-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
-          <Input
-            data-testid="incident-search-input"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && (setPage(1), load(query, 1))}
-            placeholder="Search by number, description, or CI…"
-            className="pl-9 bg-slate-900 border-slate-800 text-slate-100 placeholder:text-slate-500"
-          />
-        </div>
-        <Button data-testid="search-btn" onClick={() => { setPage(1); load(query, 1); }} className="bg-cyan-600 hover:bg-cyan-500 text-white">Search</Button>
-        <div className="flex items-center gap-1 rounded-md border border-slate-800 bg-slate-900 p-1 text-xs">
-          {[
-            { k: "all", label: "All" },
-            { k: "1", label: "P1" },
-            { k: "2", label: "P2" },
-            { k: "3", label: "P3" },
-            { k: "4", label: "P4" },
-          ].map((f) => (
-            <button
-              key={f.k}
-              data-testid={`filter-${f.k}`}
-              onClick={() => setPriorityFilter(f.k)}
-              className={`px-2.5 py-1 rounded ${priorityFilter === f.k ? "bg-slate-700 text-white" : "text-slate-400 hover:text-white"}`}
-            >
-              {f.label}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {needCreds && (
-        <div className="mt-6 rounded-xl border border-amber-500/40 bg-amber-500/10 p-5 flex items-center gap-4" data-testid="sn-creds-banner">
-          <KeyRound className="h-6 w-6 text-amber-300 shrink-0" />
-          <div className="flex-1">
-            <div className="font-semibold text-amber-100">ServiceNow login required</div>
-            <div className="text-sm text-amber-200/80 mt-0.5">Incidents are fetched with your own ServiceNow account. Enter your username and password to continue.</div>
-          </div>
-          <Button onClick={openSNCredentials} className="bg-amber-500 hover:bg-amber-400 text-slate-950 font-semibold" data-testid="sn-creds-banner-btn">Enter credentials</Button>
-        </div>
-      )}
+      <IncidentFilters query={query} onQueryChange={setQuery} onSearch={search} priorityFilter={priorityFilter} onPriorityChange={setPriorityFilter} />
+      {needCreds && <CredentialsBanner />}
 
       <div className="mt-6 overflow-hidden rounded-xl border border-slate-800 bg-slate-950/50">
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead className="bg-slate-900/70 text-slate-400 text-xs uppercase tracking-wider">
-              <tr>
-                <Th>Incident</Th><Th>Short Description</Th><Th>Application</Th>
-                <Th>Priority</Th><Th>Impact</Th><Th>Assignment</Th><Th>State</Th><Th>Opened</Th><Th></Th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-800/80">
-              {loading && (
-                <tr><td colSpan={9} className="px-4 py-10 text-center text-slate-400">Loading incidents…</td></tr>
-              )}
-              {!loading && filtered.length === 0 && (
-                <tr><td colSpan={9} className="px-4 py-10 text-center text-slate-500">No open incidents found.</td></tr>
-              )}
-              {!loading && filtered.map((it) => (
-                <tr
-                  key={it.sys_id}
-                  data-testid={`incident-row-${val(it.number)}`}
-                  className="hover:bg-slate-900/50 cursor-pointer transition-colors"
-                  onClick={() => nav(`/incidents/${it.sys_id}`)}
-                >
-                  <Td><span className="font-mono text-cyan-300 text-xs">{val(it.number)}</span></Td>
-                  <Td className="max-w-[420px] truncate text-slate-200">{val(it.short_description)}</Td>
-                  <Td className="text-slate-300">{val(it.cmdb_ci)}</Td>
-                  <Td><Badge className={`border ${priorityBadge(it.priority)} font-medium whitespace-nowrap`}>{val(it.priority) || "—"}</Badge></Td>
-                  <Td className="text-slate-300">{val(it.impact) || "—"}</Td>
-                  <Td className="text-slate-300">{val(it.assignment_group) || "—"}</Td>
-                  <Td className="text-slate-300">{val(it.state) || "—"}</Td>
-                  <Td className="text-slate-400 font-mono text-xs">{val(it.opened_at)}</Td>
-                  <Td>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      data-testid={`analyze-open-btn-${val(it.number)}`}
-                      onClick={(e) => { e.stopPropagation(); nav(`/incidents/${it.sys_id}`); }}
-                      className="text-cyan-300 hover:text-cyan-200 hover:bg-slate-800"
-                    >
-                      Open →
-                    </Button>
-                  </Td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-        <div className="flex items-center justify-between px-4 py-3 border-t border-slate-800 text-xs text-slate-400">
-          <div>Showing <span className="text-slate-200">{filtered.length}</span> of <span className="text-slate-200">{total}</span></div>
-          <div className="flex items-center gap-2">
-            <Button size="sm" variant="ghost" data-testid="prev-page-btn" disabled={page <= 1} onClick={() => setPage((p) => p - 1)} className="text-slate-300"><ChevronLeft className="h-4 w-4" /> Prev</Button>
-            <div className="font-mono">Page {page} / {totalPages}</div>
-            <Button size="sm" variant="ghost" data-testid="next-page-btn" disabled={page >= totalPages} onClick={() => setPage((p) => p + 1)} className="text-slate-300">Next <ChevronRight className="h-4 w-4" /></Button>
-          </div>
-        </div>
+        <IncidentTable items={filtered} loading={loading} onOpen={open} />
+        <Pagination shown={filtered.length} total={total} page={page} totalPages={totalPages}
+                    onPrev={() => setPage((p) => p - 1)} onNext={() => setPage((p) => p + 1)} />
       </div>
     </div>
   );
 }
-
-const Th = ({ children }) => <th className="px-4 py-3 text-left font-semibold">{children}</th>;
-const Td = ({ children, className = "" }) => <td className={`px-4 py-3 ${className}`}>{children}</td>;

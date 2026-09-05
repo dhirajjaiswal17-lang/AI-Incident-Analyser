@@ -19,7 +19,7 @@ export default function AppShell() {
   const [snStatus, setSnStatus] = useState(null);
 
   useEffect(() => {
-    const refresh = () => api.get("/me/servicenow").then(r => setSnStatus(r.data)).catch(() => {});
+    const refresh = () => api.get("/me/servicenow").then(r => setSnStatus(r.data)).catch(e => console.error("ServiceNow status fetch failed:", e));
     refresh();
     const onReq = () => setSnOpen(true);
     window.addEventListener(SN_CREDS_REQUIRED, onReq);
